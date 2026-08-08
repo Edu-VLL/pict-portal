@@ -27,7 +27,7 @@ genuinely recognize the drawing. The guess is published to `chat:main`, and if i
 matches the word, the AI wins the round.
 
 The **drawer's browser is the authority**: it holds the secret word, validates every
-human guess (case-insensitive, tolerates one typo), and ends the round — so there's a
+human guess (case-insensitive, exact match), and ends the round — so there's a
 single source of truth with no extra backend.
 
 ---
