@@ -37,10 +37,10 @@ const NO_ROUND: Round = {
   id: 0,
 };
 
-export default function Game({ name }: { name: string }) {
+export default function Game({ name, roomCode }: { name: string, roomCode: string}) {
   // ---- Channels -------------------------------------------------------------
   const game = useChannel<GameMsg>({
-    channelId: gameChannel(),
+    channelId: gameChannel(roomCode),
     metadata: { name },
   });
 
@@ -56,7 +56,7 @@ export default function Game({ name }: { name: string }) {
   }, [name]);
 
   const chat = useChannel<ChatMsg>({
-    channelId: chatChannel(),
+    channelId: chatChannel(roomCode),
     metadata: { name },
     onMessage: (m) => {
       // The drawer is the authority that validates human guesses.
@@ -286,7 +286,10 @@ export default function Game({ name }: { name: string }) {
           <h1 className="text-lg font-semibold">
             Pict<span className="text-accent">-Portal</span>
           </h1>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-5">
+            <span className="font-mono tracking-widest text-white/80">
+              Room:{roomCode}
+            </span>
             <Status status={game.status} />
             <div className="flex items-center gap-1.5 text-xs text-white/50">
               {game.presence?.count ?? 1} online · you are{" "}
@@ -361,7 +364,7 @@ export default function Game({ name }: { name: string }) {
           )}
         </div>
 
-        <Canvas key={round.id} isDrawer={isDrawer} snapshotRef={snapshotRef} />
+        <Canvas key={round.id} isDrawer={isDrawer} snapshotRef={snapshotRef} roomCode={roomCode} />
 
         <Scoreboard scores={scores} />
       </div>
