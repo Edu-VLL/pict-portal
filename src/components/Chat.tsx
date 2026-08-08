@@ -1,0 +1,86 @@
+"use client";
+
+import { FormEvent, useEffect, useRef, useState } from "react";
+import { ChatMsg } from "@/lib/types";
+
+export type FeedItem = { id: string; content: ChatMsg };
+
+export default function Chat({
+  items,
+  disabled,
+  placeholder,
+  onSend,
+}: {
+  items: FeedItem[];
+  disabled: boolean;
+  placeholder: string;
+  onSend: (text: string) => void;
+}) {
+  const [text, setText] = useState("");
+  const endRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [items.length]);
+
+  function submit(e: FormEvent) {
+    e.preventDefault();
+    const t = text.trim();
+    if (!t) return;
+    onSend(t);
+    setText("");
+  }
+
+  return (
+    <div className="flex h-full flex-col rounded-xl border border-edge bg-panel">
+      <div className="border-b border-edge px-4 py-3 text-sm font-medium text-white/70">
+        Guesses
+      </div>
+      <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
+        {items.map((it) => (
+          <Line key={it.id} msg={it.content} />
+        ))}
+        <div ref={endRef} />
+      </div>
+      <form onSubmit={submit} className="flex gap-2 border-t border-edge p-3">
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          disabled={disabled}
+          placeholder={placeholder}
+          className="flex-1 rounded-md border border-edge bg-ink px-3 py-2 text-sm outline-none placeholder:text-white/30 focus:border-accent disabled:opacity-50"
+        />
+        <button
+          type="submit"
+          disabled={disabled}
+          className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+        >
+          Guess
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function Line({ msg }: { msg: ChatMsg }) {
+  if (msg.kind === "system") {
+    return <p className="text-center text-xs text-white/40">{msg.text}</p>;
+  }
+  if (msg.kind === "correct") {
+    return (
+      <p className="text-sm font-semibold text-green-400">
+        {msg.ai ? "🤖 " : "🎉 "}
+        {msg.name} guessed it — “{msg.word}”
+      </p>
+    );
+  }
+  return (
+    <p className="text-sm">
+      <span className={msg.ai ? "font-semibold text-accent" : "font-semibold text-white/80"}>
+        {msg.ai ? "🤖 AI" : msg.name}
+      </span>
+      <span className="text-white/50">: </span>
+      <span className="text-white/90">{msg.text}</span>
+    </p>
+  );
+}
