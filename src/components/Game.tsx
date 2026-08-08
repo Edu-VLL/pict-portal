@@ -228,9 +228,50 @@ export default function Game({ name }: { name: string }) {
     const iv = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(iv);
   }, []);
+  // End the round when time's up. Normally the drawer ends it; but a present
+  // "watchdog" client (lowest id in the room) also ends it, so the round never
+  // hangs if the drawer's tab is gone or asleep.
   useEffect(() => {
-    if (isDrawer && round.active && now > round.endsAt) endRound();
-  }, [isDrawer, round.active, round.endsAt, now, endRound]);
+    if (!round.active || now <= round.endsAt) return;
+    const isWatchdog = roster.length > 0 && roster[0] === meId;
+    if (!isDrawer && !isWatchdog) return;
+    endRound();
+  }, [round.active, round.endsAt, now, isDrawer, roster, meId, endRound]);
+
+  // Drawer disconnect: if the current drawer leaves the room (drops out of
+  // presence), a present player ends the round after a short grace period so it
+  // returns to the lobby instead of hanging. Only runs with a real roster.
+  useEffect(() => {
+    if (!round.active || isDrawer || !meId) return;
+    console.log("[disc] check", {
+      presenceKind: game.presence?.kind,
+      count: game.presence?.count,
+      roster,
+      drawerId: round.drawerId,
+      drawerPresent: roster.includes(round.drawerId),
+    });
+    if (game.presence?.kind !== "detailed") {
+      console.log("[disc] presence is not 'detailed' — can't detect disconnect");
+      return;
+    }
+    if (roster.length === 0 || roster[0] !== meId) {
+      console.log("[disc] not the watchdog client");
+      return;
+    }
+    if (roster.includes(round.drawerId)) return; // drawer still here
+    console.log("[disc] drawer GONE → ending round in 4s");
+    const t = setTimeout(() => {
+      console.log("[disc] ending round now");
+      endRound();
+    }, 4000);
+    return () => clearTimeout(t);
+  }, [round.active, round.drawerId, isDrawer, roster, game.presence, meId, endRound]);
+
+  // Reset the per-round "ended" guard at the start of every round, on every
+  // client — so any client (drawer or watchdog) can end each round exactly once.
+  useEffect(() => {
+    if (round.active) endedRef.current = false;
+  }, [round.active, round.id]);
 
   const secondsLeft = round.active ? Math.max(0, Math.ceil((round.endsAt - now) / 1000)) : 0;
 
