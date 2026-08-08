@@ -30,6 +30,6 @@ export type GameMsg =
   | { kind: "round-end"; word: string; winner?: string; ai?: boolean };
 
 export const ROOM = "main";
-export const drawChannel = (room = ROOM) => `draw:${room}`;
-export const chatChannel = (room = ROOM) => `chat:${room}`;
-export const gameChannel = (room = ROOM) => `game:${room}`;
+export const drawChannel = (roomCode = ROOM) => `draw:${roomCode}`;
+export const chatChannel = (roomCode = ROOM) => `chat:${roomCode}`;
+export const gameChannel = (roomCode = ROOM) => `game:${roomCode}`;
