@@ -14,6 +14,16 @@ import { isCorrect, maskWord, randomWord } from "@/lib/words";
 
 const ROUND_MS = 90_000;
 const GUESS_EVERY_MS = 1_800;
+const NEXT_ROUND_DELAY_MS = 3_000;
+
+// Rotate to the next player after the one who just drew. Deterministic across
+// clients (same sorted roster + same previous drawer), so exactly one client
+// concludes it's their turn — no coordination needed.
+function pickNextDrawer(ids: string[], prev: string): string {
+  if (ids.length === 0) return "";
+  const i = ids.indexOf(prev);
+  return i === -1 ? ids[0] : ids[(i + 1) % ids.length];
+}
 
 type Round = {
   active: boolean;
@@ -105,6 +115,50 @@ export default function Game({ name }: { name: string }) {
     isDrawerRef.current = isDrawer;
   }, [isDrawer]);
 
+  // ---- Turn rotation: who draws next ---------------------------------------
+  // Everyone currently in the room (from presence), plus ourselves, sorted so
+  // every client agrees on the order.
+  const roster = useMemo(() => {
+    const ids = new Set<string>();
+    const p = game.presence;
+    if (p?.kind === "detailed") {
+      for (const u of p.participants) ids.add(u.id);
+    }
+    if (meId) ids.add(meId);
+    return [...ids].sort();
+  }, [game.presence, meId]);
+
+  const nameById = useMemo(() => {
+    const map = new Map<string, string>();
+    const p = game.presence;
+    if (p?.kind === "detailed") {
+      for (const u of p.participants) {
+        const n = (u.metadata as { name?: string } | undefined)?.name;
+        if (n) map.set(u.id, n);
+      }
+    }
+    return map;
+  }, [game.presence]);
+
+  // The drawer who just finished — set only while idle right after a round ended.
+  const lastEndedDrawerId = useMemo(() => {
+    let drawer = "";
+    let lastStartIdx = -1;
+    let lastEndIdx = -1;
+    game.messages.forEach((m, i) => {
+      if (m.content.kind === "round-start") {
+        drawer = m.content.drawerId;
+        lastStartIdx = i;
+      } else if (m.content.kind === "round-end") {
+        lastEndIdx = i;
+      }
+    });
+    return lastEndIdx >= 0 && lastEndIdx > lastStartIdx ? drawer : null;
+  }, [game.messages]);
+
+  const nextDrawerId =
+    lastEndedDrawerId !== null ? pickNextDrawer(roster, lastEndedDrawerId) : "";
+
   // ---- Round control --------------------------------------------------------
   const startRound = useCallback(() => {
     if (!meId) return;
@@ -122,6 +176,16 @@ export default function Game({ name }: { name: string }) {
       },
     });
   }, [game, meId, name]);
+
+  // After a round ends, only the next drawer in the rotation auto-starts a fresh
+  // round (after a short pause). One client acts, so there's no double-start.
+  useEffect(() => {
+    if (round.active) return;
+    if (lastEndedDrawerId === null) return;
+    if (!meId || nextDrawerId !== meId) return;
+    const t = setTimeout(() => startRound(), NEXT_ROUND_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [round.active, lastEndedDrawerId, nextDrawerId, meId, startRound]);
 
   const endRound = useCallback(
     (winner?: string, ai?: boolean) => {
@@ -256,7 +320,21 @@ export default function Game({ name }: { name: string }) {
           ) : (
             <>
               <div className="text-sm text-white/60">
-                No active round. Pick up the pen and let the AI try to guess.
+                {lastEndedDrawerId !== null && nextDrawerId ? (
+                  nextDrawerId === meId ? (
+                    <span className="text-accent">Your turn — starting…</span>
+                  ) : (
+                    <>
+                      Next up:{" "}
+                      <span className="text-white/90">
+                        {nameById.get(nextDrawerId) ?? "another player"}
+                      </span>{" "}
+                      — new round in a moment…
+                    </>
+                  )
+                ) : (
+                  "No active round. Pick up the pen and let the AI try to guess."
+                )}
               </div>
               <button
                 onClick={startRound}
