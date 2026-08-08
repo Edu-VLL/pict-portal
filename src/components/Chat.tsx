@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { ChatMsg } from "@/lib/types";
+import PlayerBadge from "./PlayerBadge";
 
 export type FeedItem = { id: string; content: ChatMsg };
 
@@ -68,18 +69,23 @@ function Line({ msg }: { msg: ChatMsg }) {
   }
   if (msg.kind === "correct") {
     return (
-      <p className="text-sm font-semibold text-green-400">
-        {msg.ai ? "🤖 " : "🎉 "}
+      <p className="flex items-center gap-1.5 text-sm font-semibold text-green-400">
+        {msg.ai ? "🤖" : <PlayerBadge name={msg.name} />}
         {msg.name} guessed it — “{msg.word}”
       </p>
     );
   }
   return (
-    <p className="text-sm">
-      <span className={msg.ai ? "font-semibold text-accent" : "font-semibold text-white/80"}>
-        {msg.ai ? "🤖 AI" : msg.name}
-      </span>
-      <span className="text-white/50">: </span>
+    <p className="flex items-start gap-1.5 text-sm">
+      {msg.ai ? (
+        <span className="font-semibold text-accent">🤖 AI</span>
+      ) : (
+        <>
+          <PlayerBadge name={msg.name} />
+          <span className="font-semibold text-white/80">{msg.name}</span>
+        </>
+      )}
+      <span className="text-white/50">:</span>
       <span className="text-white/90">{msg.text}</span>
     </p>
   );

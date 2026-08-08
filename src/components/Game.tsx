@@ -4,6 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useChannel } from "@portalsdk/react";
 import Canvas from "./Canvas";
 import Chat, { FeedItem } from "./Chat";
+import PlayerBadge from "./PlayerBadge";
+import Scoreboard from "./Scoreboard";
+import Status from "./Status";
 import {
   ChatMsg,
   GameMsg,
@@ -279,13 +282,17 @@ export default function Game({ name }: { name: string }) {
     <div className="mx-auto flex max-w-6xl flex-col gap-4 p-4 lg:h-screen lg:flex-row">
       {/* Left: canvas + status */}
       <div className="flex flex-1 flex-col gap-3">
-        <header className="flex items-center justify-between">
+        <header className="flex flex-wrap items-center justify-between gap-2">
           <h1 className="text-lg font-semibold">
             Pict<span className="text-accent">-Portal</span>
           </h1>
-          <div className="text-xs text-white/50">
-            {game.presence?.count ?? 1} online · you are{" "}
-            <span className="text-white/80">{name}</span>
+          <div className="flex items-center gap-3">
+            <Status status={game.status} />
+            <div className="flex items-center gap-1.5 text-xs text-white/50">
+              {game.presence?.count ?? 1} online · you are{" "}
+              <PlayerBadge name={name} />
+              <span className="text-white/80">{name}</span>
+            </div>
           </div>
         </header>
 
@@ -302,7 +309,10 @@ export default function Game({ name }: { name: string }) {
                   </>
                 ) : (
                   <>
-                    <span className="text-white/60">{round.drawerName} is drawing</span>{" "}
+                    <span className="inline-flex items-center gap-1.5 text-white/60">
+                      <PlayerBadge name={round.drawerName} />
+                      {round.drawerName} is drawing
+                    </span>{" "}
                     <span className="ml-2 font-mono tracking-widest text-white/90">
                       {round.masked}
                     </span>
@@ -321,11 +331,19 @@ export default function Game({ name }: { name: string }) {
             <div className="flex w-full items-center justify-between">
               <div className="text-sm">
                 <div className="font-medium text-white/80">Waiting room</div>
-                <div className="text-white/50">
-                  {roster.length} player{roster.length === 1 ? "" : "s"}:{" "}
-                  {roster
-                    .map((id) => (id === meId ? name : nameById.get(id) ?? "player"))
-                    .join(", ")}
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  {roster.map((id) => {
+                    const n = id === meId ? name : nameById.get(id) ?? "player";
+                    return (
+                      <span
+                        key={id}
+                        className="inline-flex items-center gap-1.5 rounded-full bg-white/5 px-2 py-0.5 text-xs text-white/70"
+                      >
+                        <PlayerBadge name={n} />
+                        {n}
+                      </span>
+                    );
+                  })}
                 </div>
                 <div className="mt-1 text-xs text-white/40">
                   Game starts in {lobbySecondsLeft}s — waiting for players. Anyone can
@@ -345,19 +363,7 @@ export default function Game({ name }: { name: string }) {
 
         <Canvas key={round.id} isDrawer={isDrawer} snapshotRef={snapshotRef} />
 
-        {scores.length > 0 && (
-          <div className="flex flex-wrap gap-2 rounded-xl border border-edge bg-panel px-4 py-3">
-            <span className="text-xs uppercase tracking-wide text-white/40">Scores</span>
-            {scores.map(([n, s]) => (
-              <span
-                key={n}
-                className="rounded-full bg-white/5 px-3 py-1 text-sm text-white/80"
-              >
-                {n} · {s}
-              </span>
-            ))}
-          </div>
-        )}
+        <Scoreboard scores={scores} />
       </div>
 
       {/* Right: chat */}
