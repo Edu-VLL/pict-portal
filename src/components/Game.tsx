@@ -98,6 +98,8 @@ export default function Game({ name }: { name: string }) {
     });
     if (!start || lastStartIdx < lastEndIdx) return NO_ROUND;
     const s = start as GameMsg & { kind: "round-start" };
+
+    if(Date.now() > s.endsAt) return NO_ROUND;
     return {
       active: true,
       drawerId: s.drawerId,
