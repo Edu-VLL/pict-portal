@@ -122,4 +122,3 @@ src/
 - **In-app notifications** (Portal inbox) to ping players when a new round starts.
 - **Rooms**: make the room id a URL param instead of the fixed `main`.
 - **Reactions**: ephemeral emoji fan-out over a `reactions:main` channel.
-```
