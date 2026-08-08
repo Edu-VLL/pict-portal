@@ -20,10 +20,12 @@ const SIZES = [3, 6, 12, 22];
 export default function Canvas({
   isDrawer,
   snapshotRef,
+  roomCode
 }: {
   isDrawer: boolean;
   // Parent stores a function here to grab a PNG data URL of the current canvas.
   snapshotRef?: MutableRefObject<(() => string | null) | null>;
+  roomCode: string
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
@@ -36,7 +38,7 @@ export default function Canvas({
   const [size, setSize] = useState(SIZES[1]);
 
   const { send, me } = useChannel<DrawMsg>({
-    channelId: drawChannel(),
+    channelId: drawChannel(roomCode),
     history: "none",
     onMessage: (msg) => {
       console.log("[draw] mensaje recibido", { 
