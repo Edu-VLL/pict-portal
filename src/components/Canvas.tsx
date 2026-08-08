@@ -39,8 +39,16 @@ export default function Canvas({
     channelId: drawChannel(),
     history: "none",
     onMessage: (msg) => {
+      console.log("[draw] mensaje recibido", { 
+      senderId: msg.sender?.id, 
+      meId: me?.id, 
+      kind: msg.content.kind
+    })
       // Ignore our own echoes — the drawer already painted locally.
-      if (msg.sender?.id && me?.id && msg.sender.id === me.id) return;
+      if (msg.sender?.id && me?.id && msg.sender.id === me.id) {
+        console.log("[draw] ignorado (es mi propio eco)"); 
+        return;
+      }
       applyRemote(msg.content);
     },
   });
@@ -121,7 +129,8 @@ export default function Canvas({
     const points = buffer.current;
     buffer.current = [];
     lastFlush.current = now;
-    void send({ ephemeral: true, content: { kind: "stroke", points, color, size } });
+    console.log("[draw] enviando", points.length, "puntos");
+    void send({ content: { kind: "stroke", points, color, size } });
   }
 
   function onPointerDown(e: ReactPointerEvent<HTMLCanvasElement>) {
@@ -153,7 +162,7 @@ export default function Canvas({
 
   function onClear() {
     clearCanvas();
-    void send({ ephemeral: true, content: { kind: "clear" } });
+    void send({ content: { kind: "clear" } });
   }
 
   return (
