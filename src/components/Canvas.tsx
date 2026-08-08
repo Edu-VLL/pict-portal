@@ -106,7 +106,18 @@ export default function Canvas({
     if (snapshotRef) {
       snapshotRef.current = () => {
         const c = canvasRef.current;
-        return c ? c.toDataURL("image/png") : null;
+        if (!c) return null;
+        // Downscale to a small JPEG before sending to the AI — cuts the input
+        // token cost (and quota usage) massively vs. a full 900x600 PNG.
+        const scaled = document.createElement("canvas");
+        scaled.width = 320;
+        scaled.height = 213;
+        const sctx = scaled.getContext("2d");
+        if (!sctx) return c.toDataURL("image/jpeg", 0.6);
+        sctx.fillStyle = BG;
+        sctx.fillRect(0, 0, scaled.width, scaled.height);
+        sctx.drawImage(c, 0, 0, scaled.width, scaled.height);
+        return scaled.toDataURL("image/jpeg", 0.6);
       };
     }
     return () => {
