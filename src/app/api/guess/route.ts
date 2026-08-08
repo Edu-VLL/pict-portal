@@ -3,14 +3,16 @@ import { NextRequest, NextResponse } from "next/server";
 // Server-only route: the AI looks at the current doodle and guesses what it is.
 // The target word is NEVER sent here — the model has to actually recognize the
 // drawing, and the client decides if the guess matches.
+//
+// Uses Google Gemini (free tier). Get a key at https://aistudio.google.com/apikey
 
 export const runtime = "nodejs";
 
 type GuessResult = { ok: boolean; guess?: string; alternatives?: string[]; reason?: string };
 
 export async function POST(req: NextRequest): Promise<NextResponse<GuessResult>> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  const model = process.env.ANTHROPIC_MODEL || "claude-3-5-sonnet-latest";
+  const apiKey = process.env.GEMINI_API_KEY;
+  const model = process.env.GEMINI_MODEL || "gemini-flash-lite-latest";
 
   if (!apiKey) {
     // No key configured — the realtime game still works, the AI just sits out.
@@ -37,33 +39,28 @@ export async function POST(req: NextRequest): Promise<NextResponse<GuessResult>>
     '{"guess":"<one common noun>","alternatives":["<noun>","<noun>"]}. ' +
     "Use simple, singular, lowercase everyday nouns. If it's too early to tell, still give your best guess.";
 
-
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 6000);
 
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
   try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
+    const res = await fetch(url, {
       method: "POST",
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model,
-        max_tokens: 100,
-        messages: [
+        contents: [
           {
-            role: "user",
-            content: [
-              {
-                type: "image",
-                source: { type: "base64", media_type: mediaType, data: base64 },
-              },
-              { type: "text", text: prompt },
+            parts: [
+              { inline_data: { mime_type: mediaType, data: base64 } },
+              { text: prompt },
             ],
           },
         ],
+        generationConfig: {
+          maxOutputTokens: 512,
+          temperature: 0.4,
+        },
       }),
       signal: controller.signal,
     });
@@ -72,26 +69,31 @@ export async function POST(req: NextRequest): Promise<NextResponse<GuessResult>>
 
     if (!res.ok) {
       const detail = await res.text();
+      console.error(`[api/guess] Gemini ${res.status}:`, detail.slice(0, 400));
       return NextResponse.json(
-        { ok: false, reason: `anthropic_${res.status}: ${detail.slice(0, 200)}` },
+        { ok: false, reason: `gemini_${res.status}: ${detail.slice(0, 200)}` },
         { status: 502 },
       );
     }
 
     const data = (await res.json()) as {
-      content?: Array<{ type: string; text?: string }>;
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
     };
-    const text = data.content?.find((c) => c.type === "text")?.text ?? "";
+    const text =
+      data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
     const parsed = parseGuess(text);
-    if (!parsed) return NextResponse.json({ ok: false, reason: "unparseable" });
+    if (!parsed) {
+      console.error("[api/guess] unparseable. Raw model text:", JSON.stringify(text).slice(0, 300));
+      return NextResponse.json({ ok: false, reason: "unparseable" });
+    }
+    console.log("[api/guess] AI guess:", parsed.guess);
     return NextResponse.json({ ok: true, ...parsed });
   } catch (err) {
     clearTimeout(timeoutId);
     const isAbort = (err as Error).name === "AbortError";
-    return NextResponse.json(
-      { ok: false, reason: `fetch_error: ${(err as Error).message}` },
-      { status: 502 },
-    );
+    const reason = isAbort ? "timeout" : `fetch_error: ${(err as Error).message}`;
+    console.error(`[api/guess] ${reason}`);
+    return NextResponse.json({ ok: false, reason }, { status: 502 });
   }
 }
 
