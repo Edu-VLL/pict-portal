@@ -13,17 +13,8 @@ import {
 import { isCorrect, maskWord, randomWord } from "@/lib/words";
 
 const ROUND_MS = 90_000;
-const GUESS_EVERY_MS = 1_800;
-const NEXT_ROUND_DELAY_MS = 3_000;
-
-// Rotate to the next player after the one who just drew. Deterministic across
-// clients (same sorted roster + same previous drawer), so exactly one client
-// concludes it's their turn — no coordination needed.
-function pickNextDrawer(ids: string[], prev: string): string {
-  if (ids.length === 0) return "";
-  const i = ids.indexOf(prev);
-  return i === -1 ? ids[0] : ids[(i + 1) % ids.length];
-}
+const GUESS_EVERY_MS = 5_000;
+const LOBBY_WAIT_MS = 30_000; // waiting room countdown before each round begins
 
 type Round = {
   active: boolean;
@@ -85,6 +76,11 @@ export default function Game({ name }: { name: string }) {
 
   // ---- Derived round state --------------------------------------------------
   const round: Round = useMemo(() => {
+    // Take the MOST RECENT round-start. It's the active round unless a round-end
+    // came after it or it already expired. Using the latest (by global seq
+    // order) means every client converges on the same round, so simultaneous
+    // "I'll draw" clicks collapse to one round — and a freshly clicked start is
+    // always the one that wins (old expired starts in history are ignored).
     let start: (GameMsg & { kind: "round-start" }) | null = null;
     let lastStartIdx = -1;
     let lastEndIdx = -1;
@@ -96,10 +92,10 @@ export default function Game({ name }: { name: string }) {
         lastEndIdx = i;
       }
     });
-    if (!start || lastStartIdx < lastEndIdx) return NO_ROUND;
+    if (!start || lastEndIdx > lastStartIdx) return NO_ROUND;
     const s = start as GameMsg & { kind: "round-start" };
 
-    if(Date.now() > s.endsAt) return NO_ROUND;
+    if (Date.now() > s.endsAt) return NO_ROUND;
     return {
       active: true,
       drawerId: s.drawerId,
@@ -142,32 +138,21 @@ export default function Game({ name }: { name: string }) {
     return map;
   }, [game.presence]);
 
-  // The drawer who just finished — set only while idle right after a round ended.
-  const lastEndedDrawerId = useMemo(() => {
-    let drawer = "";
-    let lastStartIdx = -1;
-    let lastEndIdx = -1;
-    game.messages.forEach((m, i) => {
-      if (m.content.kind === "round-start") {
-        drawer = m.content.drawerId;
-        lastStartIdx = i;
-      } else if (m.content.kind === "round-end") {
-        lastEndIdx = i;
-      }
-    });
-    return lastEndIdx >= 0 && lastEndIdx > lastStartIdx ? drawer : null;
-  }, [game.messages]);
-
-  const nextDrawerId =
-    lastEndedDrawerId !== null ? pickNextDrawer(roster, lastEndedDrawerId) : "";
 
   // ---- Round control --------------------------------------------------------
+  const lastStartRef = useRef(0); // local debounce against double-clicks
   const startRound = useCallback(() => {
-    if (!meId) return;
+    // Don't start if there's already an active round, or if we just started
+    // one (guards the double-click / double-fire cases locally). The first-wins
+    // derivation above handles the cross-client race.
+    if (!meId || round.active) return;
+    const now = Date.now();
+    if (now - lastStartRef.current < 2000) return;
+    lastStartRef.current = now;
     const word = randomWord();
     wordRef.current = word;
     endedRef.current = false;
-    const endsAt = Date.now() + ROUND_MS;
+    const endsAt = now + ROUND_MS;
     void game.send({
       content: {
         kind: "round-start",
@@ -177,17 +162,8 @@ export default function Game({ name }: { name: string }) {
         endsAt,
       },
     });
-  }, [game, meId, name]);
+  }, [game, meId, name, round.active]);
 
-  // After a round ends, only the next drawer in the rotation auto-starts a fresh
-  // round (after a short pause). One client acts, so there's no double-start.
-  useEffect(() => {
-    if (round.active) return;
-    if (lastEndedDrawerId === null) return;
-    if (!meId || nextDrawerId !== meId) return;
-    const t = setTimeout(() => startRound(), NEXT_ROUND_DELAY_MS);
-    return () => clearTimeout(t);
-  }, [round.active, lastEndedDrawerId, nextDrawerId, meId, startRound]);
 
   const endRound = useCallback(
     (winner?: string, ai?: boolean) => {
@@ -258,6 +234,28 @@ export default function Game({ name }: { name: string }) {
 
   const secondsLeft = round.active ? Math.max(0, Math.ceil((round.endsAt - now) / 1000)) : 0;
 
+  // ---- Waiting room ---------------------------------------------------------
+  // The waiting room shows whenever there is no active round (before the game
+  // and between rounds). The countdown resets each time we return to it, then a
+  // fresh round auto-starts when it hits zero.
+  const waitStartRef = useRef(Date.now());
+  useEffect(() => {
+    // Entered the waiting room (no active round) → restart the countdown.
+    if (!round.active) waitStartRef.current = Date.now();
+  }, [round.active]);
+
+  const lobbySecondsLeft = round.active
+    ? 0
+    : Math.max(0, Math.ceil((waitStartRef.current + LOBBY_WAIT_MS - now) / 1000));
+
+  // When the countdown ends, start the next round. Any connected client may fire
+  // it — the round derivation + startRound's debounce dedupe it, so it doesn't
+  // depend on presence being populated.
+  useEffect(() => {
+    if (round.active || lobbySecondsLeft > 0 || !meId) return;
+    startRound();
+  }, [round.active, lobbySecondsLeft, meId, startRound]);
+
   // ---- Scoreboard from broadcast "correct" events --------------------------
   const scores = useMemo(() => {
     const map = new Map<string, number>();
@@ -320,32 +318,28 @@ export default function Game({ name }: { name: string }) {
               </div>
             </>
           ) : (
-            <>
-              <div className="text-sm text-white/60">
-                {lastEndedDrawerId !== null && nextDrawerId ? (
-                  nextDrawerId === meId ? (
-                    <span className="text-accent">Your turn — starting…</span>
-                  ) : (
-                    <>
-                      Next up:{" "}
-                      <span className="text-white/90">
-                        {nameById.get(nextDrawerId) ?? "another player"}
-                      </span>{" "}
-                      — new round in a moment…
-                    </>
-                  )
-                ) : (
-                  "No active round. Pick up the pen and let the AI try to guess."
-                )}
+            <div className="flex w-full items-center justify-between">
+              <div className="text-sm">
+                <div className="font-medium text-white/80">Waiting room</div>
+                <div className="text-white/50">
+                  {roster.length} player{roster.length === 1 ? "" : "s"}:{" "}
+                  {roster
+                    .map((id) => (id === meId ? name : nameById.get(id) ?? "player"))
+                    .join(", ")}
+                </div>
+                <div className="mt-1 text-xs text-white/40">
+                  Game starts in {lobbySecondsLeft}s — waiting for players. Anyone can
+                  press Start.
+                </div>
               </div>
               <button
                 onClick={startRound}
                 disabled={!meId}
                 className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
               >
-                I&apos;ll draw
+                Start now
               </button>
-            </>
+            </div>
           )}
         </div>
 
