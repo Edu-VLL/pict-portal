@@ -37,6 +37,10 @@ export async function POST(req: NextRequest): Promise<NextResponse<GuessResult>>
     '{"guess":"<one common noun>","alternatives":["<noun>","<noun>"]}. ' +
     "Use simple, singular, lowercase everyday nouns. If it's too early to tell, still give your best guess.";
 
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 6000);
+
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -61,7 +65,10 @@ export async function POST(req: NextRequest): Promise<NextResponse<GuessResult>>
           },
         ],
       }),
+      signal: controller.signal,
     });
+
+    clearTimeout(timeoutId);
 
     if (!res.ok) {
       const detail = await res.text();
@@ -79,6 +86,8 @@ export async function POST(req: NextRequest): Promise<NextResponse<GuessResult>>
     if (!parsed) return NextResponse.json({ ok: false, reason: "unparseable" });
     return NextResponse.json({ ok: true, ...parsed });
   } catch (err) {
+    clearTimeout(timeoutId);
+    const isAbort = (err as Error).name === "AbortError";
     return NextResponse.json(
       { ok: false, reason: `fetch_error: ${(err as Error).message}` },
       { status: 502 },
