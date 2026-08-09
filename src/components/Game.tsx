@@ -1026,6 +1026,11 @@ export default function Game({
             <span className="font-mono tracking-widest text-fg/80">
               Sala:{roomCode}
             </span>
+            {totalRounds > 0 && (
+              <span className="rounded-md border border-edge px-2 py-0.5 text-xs font-medium text-fg/70">
+                Ronda {Math.min(roundsPlayed + 1, totalRounds)}/{totalRounds}
+              </span>
+            )}
             <Status status={game.status} />
             <div className="flex items-center gap-1.5 text-xs text-fg/50">
               eres <PlayerBadge name={name} />
