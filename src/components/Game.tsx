@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useChannel } from "@portalsdk/react";
 import Canvas from "./Canvas";
+import Celebration from "./Celebration";
 import Chat, { FeedItem } from "./Chat";
 import PlayerBadge from "./PlayerBadge";
 import PlayersPanel, { PlayerRow } from "./PlayersPanel";
@@ -15,10 +16,20 @@ import {
   chatChannel,
   gameChannel,
 } from "@/lib/types";
-import { isCorrect, maskWord, randomWord } from "@/lib/words";
+import { isCorrect, maskWord, randomWord, revealLetters } from "@/lib/words";
 
 const ROUND_MS = 90_000;
 const GUESS_EVERY_MS = 5_000;
+// Canvas coordinate space the AI's normalized 0..1 strokes are scaled into —
+// must match Canvas.tsx's fixed W/H backing store.
+const CANVAS_W = 900;
+const CANVAS_H = 600;
+const MAX_HINTS = 3; // per round, so clues never add up to the answer
+const HINT_COOLDOWN_MS = 5_000;
+const AI_TURN_ID = "__ai__"; // the bot's slot in the turn order
+const AI_CHUNK = 2; // points per publish, keeps the line visibly advancing
+const AI_STROKE_MS = 90; // pace between chunks
+const AI_PAUSE_MS = 260; // pen lift between strokes
 const LOBBY_WAIT_MS = 30_000; // waiting room countdown before each round begins
 
 type Round = {
@@ -28,6 +39,7 @@ type Round = {
   masked: string;
   endsAt: number;
   id: number;
+  aiDrawing: boolean;
 };
 
 const NO_ROUND: Round = {
@@ -37,6 +49,7 @@ const NO_ROUND: Round = {
   masked: "",
   endsAt: 0,
   id: 0,
+  aiDrawing: false,
 };
 
 export default function Game({
@@ -60,6 +73,11 @@ export default function Game({
     channelId: gameChannel(roomCode),
     metadata: { name },
     onMessage: (m) => {
+      if (m.content.kind === "round-request") {
+        // Only the client holding the word can answer these.
+        roundRequestRef.current?.(m.content.what);
+        return;
+      }
       if (m.content.kind !== "player-left") return;
       const id = m.content.playerId;
       setJustLeftIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
@@ -90,8 +108,26 @@ export default function Game({
     return map;
   }, [game.messages]);
 
+  // Latest ai-toggle wins; the AI plays by default until someone benches it.
+  const aiEnabled = useMemo(() => {
+    let enabled = true;
+    for (const m of game.messages) {
+      if (m.content.kind === "ai-toggle") enabled = m.content.enabled;
+    }
+    return enabled;
+  }, [game.messages]);
+
   const wordRef = useRef<string | null>(null); // known only to the drawer
+  // Canvas parks a "paint + publish this stroke" function here so the host of
+  // an AI round can play the bot's drawing out through the same draw channel.
+  const drawStrokeRef = useRef<((points: { x: number; y: number }[]) => void) | null>(null);
   const endedRef = useRef(false); // guards against double round-end
+  // Answers hint/skip asks from other players; only wired up on the client
+  // that actually holds the word (see the effect further down).
+  const roundRequestRef = useRef<((what: "hint" | "skip") => void) | null>(null);
+  const hintsRef = useRef<string[]>([]); // clues already given this round
+  const lastHintAtRef = useRef(0);
+  const hintsExhaustedSaidRef = useRef(false);
   const isDrawerRef = useRef(false);
   const nameRef = useRef(name);
   const sendChatRef = useRef<((m: ChatMsg) => void) | null>(null);
@@ -113,7 +149,13 @@ export default function Game({
       const word = wordRef.current;
       if (!word) return;
       if (isCorrect(c.text, word)) {
-        sendChatRef.current?.({ kind: "correct", name: c.name, word });
+        sendChatRef.current?.({
+          kind: "correct",
+          name: c.name,
+          word,
+          // The guesser's own client is the one that should celebrate.
+          ...(m.sender?.id ? { playerId: m.sender.id } : {}),
+        });
         endRoundRef.current?.(c.name);
       }
     },
@@ -136,10 +178,11 @@ export default function Game({
   }, [game.status, game.loadPrevious]);
 
   const loadedChatHistory = useRef(false);
+  const [chatHistoryLoaded, setChatHistoryLoaded] = useState(false);
   useEffect(() => {
     if (chat.status !== "ready" || loadedChatHistory.current) return;
     loadedChatHistory.current = true;
-    void chat.loadPrevious();
+    void chat.loadPrevious().finally(() => setChatHistoryLoaded(true));
   }, [chat.status, chat.loadPrevious]);
 
 
@@ -172,10 +215,13 @@ export default function Game({
       masked: s.masked,
       endsAt: s.endsAt,
       id: s.endsAt,
+      aiDrawing: s.aiDrawing === true,
     };
   }, [game.messages]);
 
   const meId = game.me?.id;
+  // Whoever started the round holds the drawer slot even when the AI is the
+  // one drawing — they host it (publish its strokes, validate guesses).
   const isDrawer = round.active && !!meId && round.drawerId === meId;
 
   useEffect(() => {
@@ -219,41 +265,119 @@ export default function Game({
     return [...ids].sort();
   }, [game.activity, meId, justLeftIds]);
 
+  // Room leader = first id in the (deterministically sorted) roster, so every
+  // client agrees without electing anyone. If they leave, the next player
+  // inherits it automatically. The leader owns room-level decisions (whether
+  // the AI plays) and hosts the AI's turns.
+  const leaderId = roster[0];
+  const isLeader = !!meId && leaderId === meId;
+
+  // Turn order: everyone present, plus the AI as its own participant when it's
+  // in the game — it takes a turn like any other player rather than borrowing
+  // someone else's. Rounds played (from history, which every client shares)
+  // advances the pointer, so all clients agree on whose turn it is.
+  const turnOrder = useMemo(
+    () => (aiEnabled ? [...roster, AI_TURN_ID] : roster),
+    [roster, aiEnabled],
+  );
+
+  // Counts rounds that *finished*, not ones that started — so re-rolling the
+  // word mid-turn (a "skip") replaces the round without handing the turn to
+  // the next player.
+  const roundsPlayed = useMemo(
+    () => game.messages.filter((m) => m.content.kind === "round-end").length,
+    [game.messages],
+  );
+
+  const nextTurnId = turnOrder.length ? turnOrder[roundsPlayed % turnOrder.length] : undefined;
+  const isAiTurn = nextTurnId === AI_TURN_ID;
+  const isMyTurn = !!meId && nextTurnId === meId;
+  // The bot has no client of its own, so on its turn the leader quietly hosts
+  // it: fetches the drawing, publishes the strokes, holds the word.
+  const iStartNextRound = isMyTurn || (isAiTurn && isLeader);
+
 
   const players: PlayerRow[] = useMemo(() => {
     return roster.map((id) => ({
       id,
       name: id === meId ? name : namesById.get(id) ?? "player",
       isMe: id === meId,
-      isDrawer: round.active && id === round.drawerId,
+      isLeader: id === leaderId,
+      // On an AI turn the drawerId is just the human hosting it — the pencil
+      // belongs on the bot's row, not theirs.
+      isDrawer: round.active && !round.aiDrawing && id === round.drawerId,
       isTyping: chat.typing.includes(id),
     }));
-  }, [roster, meId, name, namesById, round.active, round.drawerId, chat.typing]);
+  }, [
+    roster,
+    meId,
+    name,
+    namesById,
+    leaderId,
+    round.active,
+    round.aiDrawing,
+    round.drawerId,
+    chat.typing,
+  ]);
 
   // ---- Round control --------------------------------------------------------
   const lastStartRef = useRef(0); // local debounce against double-clicks
-  const startRound = useCallback(() => {
-    // Don't start if there's already an active round, or if we just started
-    // one (guards the double-click / double-fire cases locally). The first-wins
-    // derivation above handles the cross-client race.
-    if (!meId || round.active) return;
-    const now = Date.now();
-    if (now - lastStartRef.current < 2000) return;
-    lastStartRef.current = now;
-    const word = randomWord();
-    wordRef.current = word;
-    endedRef.current = false;
-    const endsAt = now + ROUND_MS;
-    void game.send({
-      content: {
-        kind: "round-start",
-        drawerId: meId,
-        drawerName: name,
-        masked: maskWord(word),
-        endsAt,
-      },
-    });
-  }, [game, meId, name, round.active]);
+  const startRound = useCallback(
+    (aiDrawing = false) => {
+      // Don't start if there's already an active round, or if we just started
+      // one (guards the double-click / double-fire cases locally). The first-wins
+      // derivation above handles the cross-client race.
+      if (!meId || round.active) return;
+      const now = Date.now();
+      if (now - lastStartRef.current < 2000) return;
+      lastStartRef.current = now;
+      const word = randomWord();
+      wordRef.current = word;
+      endedRef.current = false;
+      hintsRef.current = [];
+      lastHintAtRef.current = 0;
+      hintsExhaustedSaidRef.current = false;
+      const endsAt = now + ROUND_MS;
+      void game.send({
+        content: {
+          kind: "round-start",
+          drawerId: meId,
+          drawerName: aiDrawing ? "🤖 AI" : name,
+          masked: maskWord(word),
+          endsAt,
+          ...(aiDrawing ? { aiDrawing: true } : {}),
+        },
+      });
+    },
+    [game.send, meId, name, round.active],
+  );
+
+  // Swap in a fresh word for the *same* turn. Publishing a new round-start
+  // (with no round-end in between) replaces the live round — the derivation
+  // always takes the latest start — and since the turn pointer counts
+  // round-ends, the current player keeps their turn.
+  const reRollWord = useCallback(
+    (aiDrawing: boolean) => {
+      if (!meId) return;
+      const word = randomWord();
+      wordRef.current = word;
+      endedRef.current = false;
+      hintsRef.current = [];
+      lastHintAtRef.current = 0;
+      hintsExhaustedSaidRef.current = false;
+      void game.send({
+        content: {
+          kind: "round-start",
+          drawerId: meId,
+          drawerName: aiDrawing ? "🤖 AI" : name,
+          masked: maskWord(word),
+          endsAt: Date.now() + ROUND_MS,
+          ...(aiDrawing ? { aiDrawing: true } : {}),
+        },
+      });
+    },
+    [game.send, meId, name],
+  );
 
 
   const endRound = useCallback(
@@ -264,12 +388,157 @@ export default function Game({
       wordRef.current = null;
       void game.send({ content: { kind: "round-end", word, winner, ai } });
     },
-    [game],
+    // game.send, not game: useChannel returns a fresh object every render, so
+    // depending on the whole thing would make endRound unstable — and any
+    // effect holding a timer that lists it as a dep would be torn down and
+    // restarted on every render (see the AI loop below).
+    [game.send],
   );
 
   useEffect(() => {
     endRoundRef.current = endRound;
   }, [endRound]);
+
+  // Wired only on the client that holds the word, so hint/skip asks from
+  // anyone in the room get answered exactly once.
+  useEffect(() => {
+    if (!isDrawer || !round.active) {
+      roundRequestRef.current = null;
+      return;
+    }
+    roundRequestRef.current = (what) => {
+      if (endedRef.current) return;
+      if (what === "skip") {
+        void chat.send({
+          content: {
+            kind: "system",
+            // Guessers otherwise just see the blanks silently change shape and
+            // wonder whether they missed something.
+            text: round.aiDrawing
+              ? "⏭ New word — the 🤖 AI is drawing again. Ignore the last sketch!"
+              : `⏭ ${name} swapped the word — start guessing again!`,
+          },
+        });
+        reRollWord(round.aiDrawing);
+        return;
+      }
+
+      const word = wordRef.current;
+      if (!word) return;
+      // Keep clues from being spammed into a giveaway — but say so, otherwise
+      // the request just vanishes and the button looks broken.
+      if (hintsRef.current.length >= MAX_HINTS) {
+        if (!hintsExhaustedSaidRef.current) {
+          hintsExhaustedSaidRef.current = true;
+          sendChatRef.current?.({
+            kind: "system",
+            text: "💡 That's all the hints for this round.",
+          });
+        }
+        return;
+      }
+      const now = Date.now();
+      if (now - lastHintAtRef.current < HINT_COOLDOWN_MS) return;
+      lastHintAtRef.current = now;
+
+      void (async () => {
+        let hint: string | null = null;
+        try {
+          const res = await fetch("/api/hint", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ word, previous: hintsRef.current }),
+          });
+          const data = (await res.json()) as { ok: boolean; hint?: string };
+          if (data.ok && data.hint) hint = data.hint;
+        } catch {
+          /* fall through to the letter reveal */
+        }
+        if (endedRef.current) return;
+        // If the model is unavailable or refuses, still give something useful
+        // rather than leaving the button feeling broken.
+        const text = hint
+          ? `💡 Hint: ${hint}`
+          : `💡 Hint: ${revealLetters(word, hintsRef.current.length + 1)}`;
+        hintsRef.current = [...hintsRef.current, hint ?? text];
+        sendChatRef.current?.({ kind: "system", text });
+      })();
+    };
+    // chat.send / reRollWord are the stable pieces; the whole `chat` object is
+    // rebuilt every render (useChannel doesn't memoize) and would re-run this
+    // needlessly on each countdown tick.
+  }, [isDrawer, round.active, round.aiDrawing, name, chat.send, reRollWord]);
+
+  // If we're the one holding the word, handle it right here. Broadcasting to
+  // ourselves does NOT work: Portal delivers a message to every *other*
+  // client's onMessage but never echoes it back to the sender (verified
+  // against the live backend), so the drawer pressing their own Skip/Hint
+  // would be silently dropped. Going direct is also instant — no round trip.
+  function requestHint() {
+    if (hintPending) return;
+    setHintPending(true);
+    if (roundRequestRef.current) {
+      roundRequestRef.current("hint");
+      return;
+    }
+    void game.send({ content: { kind: "round-request", what: "hint" } });
+    // Safety net: a request that lands inside the word-holder's cooldown gets
+    // no reply at all, so don't leave the button stuck on "Asking…".
+    setTimeout(() => setHintPending(false), HINT_COOLDOWN_MS + 2000);
+  }
+
+  function requestSkip() {
+    if (skipPending) return;
+    setSkipPending(true);
+    if (roundRequestRef.current) {
+      roundRequestRef.current("skip");
+      return;
+    }
+    void game.send({ content: { kind: "round-request", what: "skip" } });
+    setTimeout(() => setSkipPending(false), 4000);
+  }
+
+  function submitGuess(text: string) {
+    void chat.send({ content: { kind: "guess", name, text } });
+    // While hosting an AI turn we're both the round's authority *and* a
+    // player. The validator in chat's onMessage deliberately skips our own
+    // messages, so our guess has to be checked right here.
+    if (isDrawer && round.aiDrawing && !endedRef.current) {
+      const word = wordRef.current;
+      if (word && isCorrect(text, word)) {
+        void chat.send({
+          content: { kind: "correct", name, word, ...(meId ? { playerId: meId } : {}) },
+        });
+        endRound(name);
+      }
+    }
+  }
+
+  // The drawer (or the host of an AI round) can cut it short instead of
+  // everyone sitting out the full timer — they're the one holding the word,
+  // so they're the only client that can end it cleanly anyway.
+  function endRoundNow() {
+    const word = wordRef.current;
+    void chat.send({
+      content: {
+        kind: "system",
+        text: word
+          ? `Round ended early — the word was “${word}”.`
+          : "Round ended early.",
+      },
+    });
+    endRound();
+  }
+
+  function toggleAi() {
+    void game.send({ content: { kind: "ai-toggle", enabled: !aiEnabled } });
+    void chat.send({
+      content: {
+        kind: "system",
+        text: aiEnabled ? "🤖 AI benched." : "🤖 AI joined the game.",
+      },
+    });
+  }
 
   // A deliberate "Leave" click is a controlled moment, unlike a crash/dropped
   // connection: we can announce it explicitly instead of leaving everyone
@@ -290,11 +559,76 @@ export default function Game({
     onLeave();
   }
 
-  // ---- AI guessing loop (drawer only) --------------------------------------
+  // ---- AI drawing (host of an AI round only) --------------------------------
+  // The bot has no browser, so the client that started the round fetches its
+  // doodle and plays it back through its own canvas — painting locally and
+  // fanning out over the draw channel, point by point, so everyone watches it
+  // appear like a human sketching rather than a finished image popping in.
   useEffect(() => {
-    if (!isDrawer || !round.active) return;
+    if (!isDrawer || !round.active || !round.aiDrawing) return;
+    const word = wordRef.current;
+    if (!word) return;
+    let cancelled = false;
+
+    (async () => {
+      let strokes: { points: { x: number; y: number }[] }[] = [];
+      try {
+        const res = await fetch("/api/draw", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ word }),
+        });
+        const data = (await res.json()) as {
+          ok: boolean;
+          strokes?: { points: { x: number; y: number }[] }[];
+        };
+        if (!data.ok || !data.strokes?.length) {
+          if (!cancelled) {
+            sendChatRef.current?.({
+              kind: "system",
+              text: "🤖 The AI couldn't sketch that one — starting a new round.",
+            });
+            endRoundRef.current?.();
+          }
+          return;
+        }
+        strokes = data.strokes;
+      } catch {
+        if (!cancelled) endRoundRef.current?.();
+        return;
+      }
+
+      const wait = (ms: number) =>
+        new Promise<void>((r) => setTimeout(r, ms));
+
+      for (const stroke of strokes) {
+        // Scale the normalized 0..1 coords the route returns onto the canvas.
+        const pts = stroke.points.map((p) => ({ x: p.x * CANVAS_W, y: p.y * CANVAS_H }));
+        // Emit in small overlapping chunks so each publish continues the line
+        // instead of leaving gaps between chunks.
+        for (let i = 0; i < pts.length - 1; i += AI_CHUNK) {
+          if (cancelled || endedRef.current) return;
+          drawStrokeRef.current?.(pts.slice(i, i + AI_CHUNK + 1));
+          await wait(AI_STROKE_MS);
+        }
+        if (cancelled || endedRef.current) return;
+        await wait(AI_PAUSE_MS); // a beat between strokes, like lifting the pen
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isDrawer, round.active, round.aiDrawing, round.id]);
+
+  // ---- AI guessing loop (drawer only) --------------------------------------
+  // Skipped while the AI is the one drawing — it would just be recognizing its
+  // own doodle and winning instantly.
+  useEffect(() => {
+    if (!isDrawer || !round.active || !aiEnabled || round.aiDrawing) return;
     endedRef.current = false;
     let stopped = false;
+    let lastGuess = ""; // per-round, so a new round can repeat an old guess
 
     const timer = setInterval(async () => {
       if (stopped || endedRef.current) return;
@@ -312,14 +646,20 @@ export default function Game({
           alternatives?: string[];
         };
         if (!data.ok || !data.guess || stopped || endedRef.current) return;
-        sendChatRef.current?.({ kind: "guess", name: "AI", text: data.guess, ai: true });
+        // Check for the win first, then decide whether the guess is worth
+        // posting: a repeat of the previous tick's guess is just noise in the
+        // chat (the model says "night" over and over at a sparse drawing),
+        // but it still counts if it happens to be right.
         const word = wordRef.current;
-        if (word) {
-          const candidates = [data.guess, ...(data.alternatives ?? [])];
-          if (candidates.some((c) => isCorrect(c, word))) {
-            sendChatRef.current?.({ kind: "correct", name: "AI", word, ai: true });
-            endRound("AI", true);
-          }
+        const won =
+          !!word && [data.guess, ...(data.alternatives ?? [])].some((c) => isCorrect(c, word));
+        if (data.guess !== lastGuess || won) {
+          lastGuess = data.guess;
+          sendChatRef.current?.({ kind: "guess", name: "AI", text: data.guess, ai: true });
+        }
+        if (won && word) {
+          sendChatRef.current?.({ kind: "correct", name: "AI", word, ai: true });
+          endRoundRef.current?.("AI", true);
         }
       } catch {
         /* transient — try again next tick */
@@ -330,7 +670,12 @@ export default function Game({
       stopped = true;
       clearInterval(timer);
     };
-  }, [isDrawer, round.active, round.id, endRound]);
+    // Deliberately NOT depending on endRound (reached via endRoundRef above):
+    // anything that changes identity per render would clear and restart this
+    // interval on every render — and since the countdown re-renders this
+    // component every 500ms, a 5s interval would never survive long enough
+    // to fire even once. That's why the AI never guessed.
+  }, [isDrawer, round.active, round.id, aiEnabled]);
 
   // ---- Countdown + auto end -------------------------------------------------
   const [now, setNow] = useState(Date.now());
@@ -360,7 +705,7 @@ export default function Game({
     round.active && !!round.drawerId && !roster.includes(round.drawerId);
   // Only the lowest-sorted currently-present id acts, so connected clients don't
   // all race to publish the same round-end at once.
-  const isAbandonLeader = drawerMissing && roster.length > 0 && roster[0] === meId;
+  const isAbandonLeader = drawerMissing && isLeader;
 
   const abandonedRoundIdRef = useRef<number | null>(null);
   useEffect(() => {
@@ -403,13 +748,15 @@ export default function Game({
     ? 0
     : Math.max(0, Math.ceil((waitStartRef.current + LOBBY_WAIT_MS - now) / 1000));
 
-  // When the countdown ends, start the next round. Any connected client may fire
-  // it — the round derivation + startRound's debounce dedupe it, so it doesn't
-  // depend on presence being populated.
+  // When the countdown ends, the client whose turn it is starts the round —
+  // or the leader, standing in for the AI on its turn. Everyone computes the
+  // same `nextTurnId`, so exactly one client fires; the round derivation and
+  // startRound's debounce still dedupe if two ever raced.
   useEffect(() => {
     if (round.active || lobbySecondsLeft > 0 || !meId) return;
-    startRound();
-  }, [round.active, lobbySecondsLeft, meId, startRound]);
+    if (!iStartNextRound) return;
+    startRound(isAiTurn);
+  }, [round.active, lobbySecondsLeft, meId, iStartNextRound, isAiTurn, startRound]);
 
   // ---- Scoreboard from broadcast "correct" events --------------------------
   const scores = useMemo(() => {
@@ -425,10 +772,71 @@ export default function Game({
 
   const feed: FeedItem[] = chat.messages.map((m) => ({ id: m.id, content: m.content }));
 
+  // Most recent system line — used to release the hint/skip pending state the
+  // moment the word-holder's answer actually shows up.
+  const lastSystemId = useMemo(() => {
+    for (let i = chat.messages.length - 1; i >= 0; i--) {
+      if (chat.messages[i].content.kind === "system") return chat.messages[i].id;
+    }
+    return null;
+  }, [chat.messages]);
+
+  // The celebration belongs to whoever actually got it, so this is non-null
+  // only when the latest win is ours. Everyone else still sees the green
+  // "X guessed it" line in the chat feed.
+  const myWinId = useMemo(() => {
+    for (let i = chat.messages.length - 1; i >= 0; i--) {
+      const c = chat.messages[i].content;
+      if (c.kind !== "correct") continue;
+      const mine = c.ai ? false : c.playerId ? c.playerId === meId : c.name === name;
+      return mine ? chat.messages[i].id : null;
+    }
+    return null;
+  }, [chat.messages, meId, name]);
+
+  const [hintPending, setHintPending] = useState(false);
+  const [skipPending, setSkipPending] = useState(false);
+
+  // Clear the pending state as soon as the answer lands (or the round moves
+  // on), rather than guessing at a fixed duration.
+  useEffect(() => {
+    setHintPending(false);
+    setSkipPending(false);
+  }, [lastSystemId, round.id]);
+
+  // Sound is opt-out and remembered — an effect you can't silence gets old fast.
+  const [muted, setMuted] = useState(false);
+  useEffect(() => {
+    try {
+      setMuted(localStorage.getItem("pictportal-muted") === "1");
+    } catch {
+      /* storage disabled — default to unmuted */
+    }
+  }, []);
+  function toggleMuted() {
+    setMuted((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("pictportal-muted", next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }
+
   const snapshotRef = useRef<(() => string | null) | null>(null);
 
   // ---- UI -------------------------------------------------------------------
-  const wordLabel = isDrawer ? wordRef.current ?? "" : round.masked;
+  // The host of an AI turn holds the word only to validate guesses — showing
+  // it to them would hand them the answer in a round they're playing, so they
+  // see the same masked hint as everyone else.
+  const wordLabel = isDrawer && !round.aiDrawing ? wordRef.current ?? "" : round.masked;
+  const nextTurnName = !nextTurnId
+    ? ""
+    : nextTurnId === meId
+      ? name
+      : namesById.get(nextTurnId) ?? "player";
 
   // Connecting to Portal (minting an anonymous identity + subscribing to
   // each channel) reliably takes a couple of seconds — verified against the
@@ -443,6 +851,8 @@ export default function Game({
 
   return (
     <div className="relative mx-auto flex max-w-7xl flex-col gap-4 p-4 lg:h-screen lg:flex-row">
+      <Celebration trigger={myWinId} muted={muted} armed={chatHistoryLoaded} />
+
       {connecting && (
         <div className="absolute inset-0 z-10 grid place-items-center bg-ink">
           <div className="flex flex-col items-center gap-3 text-center">
@@ -456,7 +866,14 @@ export default function Game({
       )}
 
       {/* Left: players panel */}
-      <PlayersPanel players={players} />
+      <PlayersPanel
+        players={players}
+        aiEnabled={aiEnabled}
+        aiGuessing={round.active && !round.aiDrawing}
+        aiDrawing={round.active && round.aiDrawing}
+        canToggleAi={isLeader}
+        onToggleAi={toggleAi}
+      />
 
       {/* Center: canvas + status */}
       <div className="flex flex-1 flex-col gap-3">
@@ -482,6 +899,14 @@ export default function Game({
               you are <PlayerBadge name={name} />
               <span className="text-fg/80">{name}</span>
             </div>
+            <button
+              onClick={toggleMuted}
+              title={muted ? "Unmute win sound" : "Mute win sound"}
+              aria-label="Toggle sound"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-edge text-fg/70 hover:bg-fg/5 hover:text-fg/90"
+            >
+              {muted ? "🔇" : "🔊"}
+            </button>
             <ThemeToggle />
           </div>
         </header>
@@ -490,7 +915,7 @@ export default function Game({
           {round.active ? (
             <>
               <div className="text-sm">
-                {isDrawer ? (
+                {isDrawer && !round.aiDrawing ? (
                   <>
                     You are drawing:{" "}
                     <span className="font-mono text-base font-semibold text-accent">
@@ -500,7 +925,13 @@ export default function Game({
                 ) : (
                   <>
                     <span className="inline-flex items-center gap-1.5 text-fg/60">
-                      <PlayerBadge name={round.drawerName} />
+                      {round.aiDrawing ? (
+                        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-accent/20 text-xs">
+                          🤖
+                        </span>
+                      ) : (
+                        <PlayerBadge name={round.drawerName} />
+                      )}
                       {round.drawerName} is drawing
                     </span>{" "}
                     <span className="ml-2 font-mono tracking-widest text-fg/90">
@@ -509,35 +940,90 @@ export default function Game({
                   </>
                 )}
               </div>
-              <div
-                className={`font-mono text-lg ${
-                  secondsLeft <= 10 ? "text-red-400" : "text-fg/70"
-                }`}
-              >
-                {secondsLeft}s
+              <div className="flex shrink-0 items-center gap-3">
+                <div
+                  className={`font-mono text-lg ${
+                    secondsLeft <= 10 ? "text-red-400" : "text-fg/70"
+                  }`}
+                >
+                  {secondsLeft}s
+                </div>
+                {(!isDrawer || round.aiDrawing) && (
+                  <button
+                    onClick={requestHint}
+                    disabled={hintPending}
+                    title="Ask the AI for a clue (up to 3 per round)"
+                    className="rounded-md border border-edge px-3 py-1.5 text-sm text-fg/60 hover:bg-fg/5 hover:text-fg/90 disabled:opacity-50"
+                  >
+                    {hintPending ? "💡 Asking…" : "💡 Hint"}
+                  </button>
+                )}
+                {(isDrawer || round.aiDrawing) && (
+                  <button
+                    onClick={requestSkip}
+                    disabled={skipPending}
+                    title="Swap in a different word and keep this turn"
+                    className="rounded-md border border-edge px-3 py-1.5 text-sm text-fg/60 hover:bg-fg/5 hover:text-fg/90 disabled:opacity-50"
+                  >
+                    {skipPending ? "⏭ Skipping…" : "⏭ Skip word"}
+                  </button>
+                )}
+                {isDrawer && (
+                  <button
+                    onClick={endRoundNow}
+                    title="End this round now and go back to the waiting room"
+                    className="rounded-md border border-edge px-3 py-1.5 text-sm text-fg/60 hover:bg-fg/5 hover:text-fg/90"
+                  >
+                    End round
+                  </button>
+                )}
               </div>
             </>
           ) : (
             <div className="flex w-full items-center justify-between">
               <div className="text-sm">
                 <div className="font-medium text-fg/80">Waiting room</div>
-                <div className="mt-1 text-xs text-fg/40">
-                  Game starts in {lobbySecondsLeft}s — waiting for players. Anyone can
-                  press Start.
+                <div className="mt-1 flex items-center gap-1.5 text-xs text-fg/60">
+                  <span className="text-fg/40">Next up:</span>
+                  {isAiTurn ? (
+                    <>
+                      <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-accent/20 text-[10px]">
+                        🤖
+                      </span>
+                      <span>AI</span>
+                    </>
+                  ) : nextTurnId ? (
+                    <>
+                      <PlayerBadge name={nextTurnName} />
+                      <span>{isMyTurn ? "you" : nextTurnName}</span>
+                    </>
+                  ) : (
+                    <span>—</span>
+                  )}
+                  <span className="text-fg/40">· starts in {lobbySecondsLeft}s</span>
                 </div>
               </div>
-              <button
-                onClick={startRound}
-                disabled={!meId}
-                className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
-              >
-                Start now
-              </button>
+              {iStartNextRound && (
+                <button
+                  onClick={() => startRound(isAiTurn)}
+                  disabled={!meId}
+                  className="shrink-0 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+                >
+                  {isAiTurn ? "🤖 Start the AI's turn" : "Start my turn"}
+                </button>
+              )}
             </div>
           )}
         </div>
 
-        <Canvas key={round.id} isDrawer={isDrawer} snapshotRef={snapshotRef} roomCode={roomCode} />
+        <Canvas
+          key={round.id}
+          isDrawer={isDrawer}
+          snapshotRef={snapshotRef}
+          drawStrokeRef={drawStrokeRef}
+          aiDrawing={round.aiDrawing}
+          roomCode={roomCode}
+        />
 
         <Scoreboard scores={scores} />
       </div>
@@ -546,17 +1032,17 @@ export default function Game({
       <div className="h-[420px] w-full lg:h-auto lg:w-96">
         <Chat
           items={feed}
-          disabled={isDrawer || !round.active}
+          // Hosting the AI's turn is a background job, not a turn of your own
+          // — the host guesses along with everyone else.
+          disabled={(isDrawer && !round.aiDrawing) || !round.active}
           placeholder={
             !round.active
               ? "Start a round to begin"
-              : isDrawer
+              : isDrawer && !round.aiDrawing
                 ? "You're drawing — no peeking 🙂"
                 : "Type your guess…"
           }
-          onSend={(text) =>
-            void chat.send({ content: { kind: "guess", name, text } })
-          }
+          onSend={submitGuess}
           onTyping={() => chat.sendTyping()}
         />
       </div>

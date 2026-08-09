@@ -19,6 +19,23 @@ export function maskWord(word: string): string {
     .join(" ");
 }
 
+// Fallback clue when the AI hint is unavailable: the masked word with `count`
+// letters uncovered, always including the first one so it reads as a hint
+// rather than noise. Deterministic per (word, count) so repeat calls with the
+// same count don't shuffle which letters are showing.
+export function revealLetters(word: string, count: number): string {
+  const chars = word.split("");
+  const idxs = chars.map((_, i) => i).filter((i) => chars[i] !== " ");
+  const shown = new Set<number>();
+  if (idxs.length > 0) shown.add(idxs[0]);
+  // Walk at a fixed stride so successive hints keep earlier reveals visible.
+  const stride = Math.max(2, Math.floor(idxs.length / Math.max(1, count)));
+  for (let k = stride; k < idxs.length && shown.size < count; k += stride) {
+    shown.add(idxs[k]);
+  }
+  return chars.map((c, i) => (c === " " ? " " : shown.has(i) ? c : "_")).join(" ");
+}
+
 // Compare a guess against the target word: case-insensitive, trims
 // surrounding whitespace, but otherwise requires an exact match.
 export function isCorrect(guess: string, word: string): boolean {

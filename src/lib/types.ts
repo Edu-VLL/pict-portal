@@ -26,6 +26,9 @@ export type ChatMsg =
       name: string;
       word: string;
       ai?: boolean;
+      // Who actually won, for the client that should celebrate. Matching on
+      // `name` would misfire if two people picked the same one.
+      playerId?: string;
     };
 
 // game:<room>  — round control, published by whoever is drawing.
@@ -36,6 +39,11 @@ export type GameMsg =
       drawerName: string;
       masked: string; // e.g. "_ _ _ _" (length hint, no letters)
       endsAt: number; // epoch ms
+      // The AI is drawing this round. `drawerId` still points at the human
+      // who started it — the bot has no session of its own, so that client
+      // hosts the round: it fetches the strokes, publishes them, and holds
+      // the word to validate guesses, exactly as a human drawer would.
+      aiDrawing?: boolean;
     }
   | { kind: "round-end"; word: string; winner?: string; ai?: boolean }
   // A deliberate departure (the "Leave" button) — lets everyone drop this
@@ -49,7 +57,16 @@ export type GameMsg =
   // re-announced by the server (verified against the live backend — the
   // docs claim otherwise), so it's the only reliable way for a renamed or
   // rejoined player's name to reach everyone else.
-  | { kind: "name-update"; playerId: string; name: string };
+  | { kind: "name-update"; playerId: string; name: string }
+  // Whether the AI competes as a player. Room-wide rather than per-client so
+  // everyone's roster agrees — the guessing loop itself only ever runs on the
+  // drawer's machine, so a local-only flag would let one player silently
+  // disable a bot everyone else still sees listed.
+  | { kind: "ai-toggle"; enabled: boolean }
+  // Anyone can ask for a clue or a different word, but only the client that
+  // holds the word (the drawer, or the host of an AI turn) can act on it —
+  // so the ask is broadcast and that client answers.
+  | { kind: "round-request"; what: "hint" | "skip" };
 
 export const ROOM = "main";
 export const drawChannel = (roomCode = ROOM) => `draw:${roomCode}`;

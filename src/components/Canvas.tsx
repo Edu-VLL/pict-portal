@@ -30,11 +30,20 @@ function hexToRgb(hex: string): [number, number, number] {
 export default function Canvas({
   isDrawer,
   snapshotRef,
+  drawStrokeRef,
+  aiDrawing = false,
   roomCode
 }: {
   isDrawer: boolean;
   // Parent stores a function here to grab a PNG data URL of the current canvas.
   snapshotRef?: MutableRefObject<(() => string | null) | null>;
+  // Parent stores a function here to paint AND publish a stroke it didn't get
+  // from the pointer — used to play back the AI's drawing. It has to go
+  // through the canvas rather than Game publishing directly, because the
+  // draw channel lives here and remote echoes of our own sends are ignored.
+  drawStrokeRef?: MutableRefObject<((points: StrokePoint[]) => void) | null>;
+  // The AI holds the pen this round: no manual drawing, no toolbar.
+  aiDrawing?: boolean;
   roomCode: string
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -198,6 +207,10 @@ export default function Canvas({
       snapshotRef.current = () => {
         const c = canvasRef.current;
         if (!c) return null;
+        // Nothing drawn since the last clear/round start: report "no snapshot"
+        // so the AI stays quiet instead of burning quota guessing at an empty
+        // board — which just spams the chat with "night", "blank", "nothing".
+        if (!hasContentRef.current) return null;
         // Downscale to a small JPEG before sending to the AI — cuts the input
         // token cost (and quota usage) massively vs. a full 900x600 PNG.
         const scaled = document.createElement("canvas");
@@ -215,6 +228,21 @@ export default function Canvas({
       if (snapshotRef) snapshotRef.current = null;
     };
   }, [clearCanvas, snapshotRef]);
+
+  // Imperative hook for AI-drawn strokes: paint locally and fan out, using
+  // the theme-relative "auto" ink so every viewer sees it against their own
+  // background (same reason the pointer path sends "auto").
+  useEffect(() => {
+    if (!drawStrokeRef) return;
+    drawStrokeRef.current = (points: StrokePoint[]) => {
+      if (points.length === 0) return;
+      paintSegment(points, colors[0], size);
+      void send({ content: { kind: "stroke", points, color: "auto", size } });
+    };
+    return () => {
+      drawStrokeRef.current = null;
+    };
+  }, [drawStrokeRef, paintSegment, send, colors, size]);
 
   function toCanvasPoint(e: ReactPointerEvent<HTMLCanvasElement>): StrokePoint {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -240,8 +268,10 @@ export default function Canvas({
     void send({ content: { kind: "stroke", points, color: wireColor, size } });
   }
 
+  const canDraw = isDrawer && !aiDrawing;
+
   function onPointerDown(e: ReactPointerEvent<HTMLCanvasElement>) {
-    if (!isDrawer) return;
+    if (!canDraw) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     drawing.current = true;
     const p = toCanvasPoint(e);
@@ -251,7 +281,7 @@ export default function Canvas({
   }
 
   function onPointerMove(e: ReactPointerEvent<HTMLCanvasElement>) {
-    if (!isDrawer || !drawing.current) return;
+    if (!canDraw || !drawing.current) return;
     const p = toCanvasPoint(e);
     // Paint locally through the last point for a continuous line.
     if (lastSent.current) paintSegment([lastSent.current, p], color, size);
@@ -261,7 +291,7 @@ export default function Canvas({
   }
 
   function endStroke() {
-    if (!isDrawer || !drawing.current) return;
+    if (!canDraw || !drawing.current) return;
     drawing.current = false;
     flush(true);
     lastSent.current = null;
@@ -280,21 +310,21 @@ export default function Canvas({
           width={W}
           height={H}
           className="aspect-[3/2] w-full"
-          style={{ cursor: isDrawer ? "crosshair" : "not-allowed" }}
+          style={{ cursor: canDraw ? "crosshair" : "not-allowed" }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={endStroke}
           onPointerLeave={endStroke}
           onPointerCancel={endStroke}
         />
-        {!isDrawer && (
+        {(aiDrawing || !isDrawer) && (
           <div className="pointer-events-none absolute right-3 top-3 rounded-full bg-black/50 px-3 py-1 text-xs text-white/70">
-            watching
+            {aiDrawing ? "🤖 AI is drawing" : "watching"}
           </div>
         )}
       </div>
 
-      {isDrawer && (
+      {canDraw && (
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex gap-2">
             {colors.map((c) => (
