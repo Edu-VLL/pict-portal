@@ -124,6 +124,7 @@ const PALABRAS = ["gato", "casa", "cohete", "paraguas", "pez", "bicicleta", "ara
 
 async function evaluar(nombre, model, promptFn) {
   let ok = 0, fallos = [];
+  fs.mkdirSync("bench", { recursive: true }); // outputs go in the bench/ folder
   for (const w of PALABRAS) {
     await new Promise(r => setTimeout(r, 4000));
     try {
@@ -135,8 +136,8 @@ async function evaluar(nombre, model, promptFn) {
       const c = back.replace(/```json/gi, "").replace(/```/g, "").trim();
       const j = JSON.parse(c.slice(c.indexOf("{"), c.lastIndexOf("}") + 1));
       const cands = [j.guess, ...(j.alternatives ?? [])].map(norm);
-      if (cands.includes(norm(w))) { ok++; fs.writeFileSync(`bench-${nombre}-${w}-OK.png`, png); }
-      else { fallos.push(`${w}→${j.guess}`); fs.writeFileSync(`bench-${nombre}-${w}-NO.png`, png); }
+      if (cands.includes(norm(w))) { ok++; fs.writeFileSync(`bench/bench-${nombre}-${w}-OK.png`, png); }
+      else { fallos.push(`${w}→${j.guess}`); fs.writeFileSync(`bench/bench-${nombre}-${w}-NO.png`, png); }
     } catch (e) { fallos.push(`${w}(err:${String(e.message).slice(0,40)})`); }
   }
   console.log(`${nombre.padEnd(22)} ${ok}/${PALABRAS.length}  ${fallos.length ? "fallan: " + fallos.join(", ") : ""}`);
