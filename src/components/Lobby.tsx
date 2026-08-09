@@ -1,8 +1,11 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import PlayerBadge from "./PlayerBadge";
+import ThemeToggle from "./ThemeToggle";
 import { generateRoomCode, normalizeRoomCode } from "@/lib/room";
+import { portal } from "@/lib/portal";
+import { chatChannel, drawChannel, gameChannel } from "@/lib/types";
 
 export default function Lobby({
   onJoin,
@@ -13,23 +16,54 @@ export default function Lobby({
   const [mode, setMode] = useState<"create" | "join">("create");
   const [joinCode, setJoinCode] = useState("");
 
+  // Generated once per visit (not at submit time) so it can double as the
+  // room to prewarm below — reusing the exact code we're about to create.
+  const [createdCode] = useState(() => generateRoomCode());
+
   const trimmed = name.trim();
   const trimmedCode = normalizeRoomCode(joinCode);
   const canSubmit = trimmed.length > 0 && (mode === "create" || trimmedCode.length > 0);
 
+  // Opens the room's 3 channels ahead of time, while the user is still
+  // filling in the form. Connecting to Portal — minting an anonymous
+  // identity plus a subscribe handshake per channel — reliably takes a
+  // couple of seconds (verified against the live backend); starting it here
+  // hides that wait behind normal typing time. `portal.channel(id)` is a
+  // registry lookup that hands back this exact same handle to Game's own
+  // useChannel on submit, already connecting (or connected) rather than
+  // starting from zero. Gated to a full-length code in "join" mode so we're
+  // not opening a fresh connection on every keystroke.
+  const pendingRoomCode =
+    mode === "create" ? createdCode : trimmedCode.length === 5 ? trimmedCode : undefined;
+  useEffect(() => {
+    if (!pendingRoomCode) return;
+    const channels = [
+      portal.channel(gameChannel(pendingRoomCode)),
+      portal.channel(chatChannel(pendingRoomCode)),
+      portal.channel(drawChannel(pendingRoomCode), { history: "none" }),
+    ];
+    for (const c of channels) c.acquire();
+    return () => {
+      for (const c of channels) c.release();
+    };
+  }, [pendingRoomCode]);
+
   function submit(e: FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
-    onJoin(trimmed, mode === "create" ? generateRoomCode() : trimmedCode);
+    onJoin(trimmed, mode === "create" ? createdCode : trimmedCode);
   }
 
   return (
     <div className="grid min-h-screen place-items-center p-6">
       <div className="w-full max-w-sm rounded-2xl border border-edge bg-panel p-8">
-        <h1 className="text-2xl font-semibold">
-          Pict<span className="text-accent">-Portal</span>
-        </h1>
-        <p className="mt-2 text-sm text-white/50">
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-semibold">
+            Pict<span className="text-accent">-Portal</span>
+          </h1>
+          <ThemeToggle />
+        </div>
+        <p className="mt-2 text-sm text-fg/50">
           Realtime multiplayer Pictionary — with an AI that watches your strokes
           and races to guess. Open this in two tabs to see it live.
         </p>
@@ -39,7 +73,7 @@ export default function Lobby({
             type="button"
             onClick={() => setMode("create")}
             className={`flex-1 rounded-sm py-1.5 text-sm transition ${
-              mode === "create" ? "bg-accent text-white" : "text-white/60 hover:text-white/80"
+              mode === "create" ? "bg-accent text-white" : "text-fg/60 hover:text-fg/80"
             }`}
           >
             Create room
@@ -48,7 +82,7 @@ export default function Lobby({
             type="button"
             onClick={() => setMode("join")}
             className={`flex-1 rounded-sm py-1.5 text-sm transition ${
-              mode === "join" ? "bg-accent text-white" : "text-white/60 hover:text-white/80"
+              mode === "join" ? "bg-accent text-white" : "text-fg/60 hover:text-fg/80"
             }`}
           >
             Join with code
@@ -63,7 +97,7 @@ export default function Lobby({
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Your name"
-              className="w-full bg-transparent outline-none placeholder:text-white/30"
+              className="w-full bg-transparent outline-none placeholder:text-fg/30"
             />
           </div>
 
@@ -73,7 +107,7 @@ export default function Lobby({
               onChange={(e) => setJoinCode(e.target.value)}
               placeholder="Room code"
               maxLength={8}
-              className="rounded-md border border-edge bg-ink px-3 py-2 uppercase tracking-widest outline-none placeholder:text-white/30 placeholder:tracking-normal focus:border-accent"
+              className="rounded-md border border-edge bg-ink px-3 py-2 uppercase tracking-widest outline-none placeholder:text-fg/30 placeholder:tracking-normal focus:border-accent"
             />
           )}
 
