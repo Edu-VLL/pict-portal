@@ -1,126 +1,132 @@
-# Pict-Portal 🎨🤖
+<h1 align="center">🎨 Pict-Portal</h1>
 
-Realtime multiplayer **Pictionary where an AI plays alongside humans** — it watches
-your strokes as you draw and races everyone to guess the word. Built on
-[Portal](https://useportal.co) for the realtime layer and a vision model for the AI.
+<p align="center">
+  <em>Pictionary multijugador en tiempo real donde una IA dibuja, adivina y compite contigo.</em><br/>
+  <em>Realtime multiplayer Pictionary where an AI draws, guesses and competes with you.</em>
+</p>
 
-Made for **The Realtime Hackathon by Portal**. It satisfies both eligibility rules:
-an AI capability (live doodle recognition) **and** meaningful realtime interaction
-between multiple users + an AI agent, all over Portal channels.
+<p align="center">
+  <img src="https://img.shields.io/badge/Equipo-Trazando%20con%20IA-6366F1?style=for-the-badge" alt="Equipo" />
+  <img src="https://img.shields.io/badge/Realtime-Portal-22D3C5?style=for-the-badge" alt="Portal" />
+  <img src="https://img.shields.io/badge/Hackathon-The%20Realtime%20Hackathon-7C3AED?style=for-the-badge" alt="Hackathon" />
+</p>
 
----
-
-## How it works
-
-Three Portal channels carry the whole game (all in anonymous mode — just the `pk_`):
-
-| Channel        | Purpose                                                        |
-| -------------- | ------------------------------------------------------------- |
-| `draw:main`    | The drawer's strokes, streamed as **ephemeral** messages so every viewer paints them in real time. |
-| `chat:main`    | Guesses (humans **and** the AI) + system events. Persistent, so late joiners see history. |
-| `game:main`    | Round control: `round-start` / `round-end`, published by whoever is drawing. |
-
-The **AI guesser** lives in `src/app/api/guess/route.ts`. While you draw, your browser
-snapshots the canvas every ~1.8s and sends the PNG to that route, which asks a vision
-model *"what is this?"* — **the target word is never sent to the model**, so it has to
-genuinely recognize the drawing. The guess is published to `chat:main`, and if it
-matches the word, the AI wins the round.
-
-The **drawer's browser is the authority**: it holds the secret word, validates every
-human guess (case-insensitive, exact match), and ends the round — so there's a
-single source of truth with no extra backend.
+<p align="center">
+  <img src="https://img.shields.io/badge/Next.js-000000?style=flat&logo=nextdotjs&logoColor=white" />
+  <img src="https://img.shields.io/badge/React-20232A?style=flat&logo=react&logoColor=61DAFB" />
+  <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat&logo=typescript&logoColor=white" />
+  <img src="https://img.shields.io/badge/Tailwind_CSS-06B6D4?style=flat&logo=tailwindcss&logoColor=white" />
+  <img src="https://img.shields.io/badge/Portal-22D3C5?style=flat&logoColor=white" />
+  <img src="https://img.shields.io/badge/Gemini-8E75B2?style=flat&logo=googlegemini&logoColor=white" />
+  <img src="https://img.shields.io/badge/Vercel-000000?style=flat&logo=vercel&logoColor=white" />
+</p>
 
 ---
 
-## 1. Prerequisites
+## 👥 Equipo / Team — *Trazando con IA*
 
-- **Node.js 18.18+** (20 or 22 recommended). Check with `node --version`.
-  If you don't have it: install the LTS from [nodejs.org](https://nodejs.org) or
-  `brew install node`.
+| Integrante | Rol |
+| --- | --- |
+| **Matías Carrillo** | Desarrollo |
+| **Johan Contreras** | Desarrollo |
+| **Eduardo Velasquez** | Desarrollo |
 
-## 2. Set up Portal (one time)
+Proyecto para **The Realtime Hackathon by Portal**.
+
+---
+
+## 🕹️ Sobre el proyecto / About the project
+
+### 🇪🇸 Español
+
+- 🎨 **Pict-Portal** es un Pictionary multijugador en tiempo real: alguien dibuja y el resto adivina, todo en vivo.
+- 🤖 Una **IA es un jugador más**: mira los trazos y adivina, y en su turno **dibuja ella misma** trazo por trazo.
+- 🏠 **Salas con código** para invitar a tus amigos, presencia en vivo, chat de respuestas, cursores, reacciones y pistas con IA.
+- 🏆 Elige **cuántas rondas** dura la partida y al final se muestra un **podio** con el ganador.
+- 🌗 Modo **claro / oscuro** y sin registro: comparte el código y a dibujar.
+
+### 🇬🇧 English
+
+- 🎨 **Pict-Portal** is a realtime multiplayer Pictionary: one person draws, everyone else guesses, all live.
+- 🤖 An **AI plays as another player**: it watches the strokes and guesses, and on its turn it **draws by itself** stroke by stroke.
+- 🏠 **Rooms with a code** to invite friends, live presence, guess chat, cursors, reactions and AI hints.
+- 🏆 Pick **how many rounds** the game lasts and see a **winner podium** at the end.
+- 🌗 **Light / dark** mode and no sign-up: share the code and start drawing.
+
+---
+
+## ⚡ Cómo usamos Portal / How we use Portal
+
+Portal es la **columna vertebral en tiempo real** de todo el juego. Cada sala vive sobre
+varios canales de Portal, en **modo anónimo** (solo con la clave publicable `pk_`), sin
+tener que montar servidores de websockets ni auth propia.
+
+Portal is the **realtime backbone** of the whole game. Each room runs on several Portal
+channels in **anonymous mode** (just the publishable `pk_` key), with no custom websocket
+servers or auth.
+
+| Canal / Channel | Uso / Usage |
+| --- | --- |
+| `game:<code>` | Control de la partida: inicio/fin de ronda, turnos, config de rondas, reinicio, nombres. |
+| `chat:<code>` | Respuestas de jugadores y de la IA + mensajes de sistema (persistente, con historial). |
+| `draw:<code>` | Trazos del dibujante en vivo como mensajes **ephemeral** (alta frecuencia, sin persistir). |
+| `cursor:<code>` | Posición del lápiz en vivo (ephemeral, `history: "none"`). |
+| `reactions:<code>` | Emojis que cualquiera lanza y flotan para todos (fan-out puro). |
+
+Además aprovechamos de Portal:
+
+- 🟢 **Presencia por actividad** (`sendActivity` / `activity`): un latido "online" que arma
+  el roster en vivo y detecta cuándo alguien se va en segundos.
+- ✍️ **Indicador de "escribiendo"** (`typing`) en el chat.
+- 📨 **Ephemeral vs persistente**: trazos y cursores efímeros; rondas y chat persistentes,
+  así los que entran tarde reciben el estado por **history**.
+- 🔌 **Modo anónimo + orígenes permitidos** para desplegar sin backend de auth.
+
+> Lo único que **no** es Portal es la visión de la IA (recorre a un modelo desde el
+> servidor). Todo lo demás —sincronizar personas, la IA y los eventos en vivo— es Portal.
+
+---
+
+## 🛠️ Tecnologías / Tech Stack
+
+**Frontend:** Next.js (App Router) · React · TypeScript · Tailwind CSS
+**Tiempo real / Realtime:** Portal (`@portalsdk/core`, `@portalsdk/react`)
+**IA / AI:** Google Gemini (adivinar, dibujar y pistas)
+**Deploy:** Vercel
+
+---
+
+## 🚀 Correr en local / Run locally
 
 ```bash
-npm install -g @portalsdk/cli
-portal login            # opens a browser — click Approve
-portal whoami           # confirm you're signed in
-
-portal projects create pict-portal      # note the production env id it prints
-portal keys create --env <ENV_ID> --type public   # prints a pk_...
-portal keys create --env <ENV_ID> --type secret   # prints an sk_...
-```
-
-If you deploy beyond localhost later:
-
-```bash
-portal origins add https://<your-domain> --env <ENV_ID>
-```
-
-## 3. Configure env
-
-```bash
-cp .env.local.example .env.local
-```
-
-Then edit `.env.local`:
-
-- `NEXT_PUBLIC_PORTAL_KEY` = your `pk_...` (safe in the browser)
-- `PORTAL_SECRET` = your `sk_...` (**never commit this**; it's git-ignored)
-- `GEMINI_API_KEY` = a Google AI Studio key for the AI guesser (server-side only).
-  Free tier: grab one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
-- `GEMINI_MODEL` = *(optional)* a vision-capable Gemini model. Leave it unset to
-  use the default `gemini-flash-lite-latest`
-
-> The game runs **without** the AI key — the realtime drawing/guessing still works,
-> the AI simply sits out. Add the key to enable the AI player.
-
-## 4. Run
-
-```bash
+# 1. Instalar dependencias / install deps
 npm install
+
+# 2. Variables de entorno / env vars
+cp .env.local.example .env.local
+#   NEXT_PUBLIC_PORTAL_KEY=pk_...     (clave publicable de Portal)
+#   GEMINI_API_KEY=...               (clave de Google Gemini, opcional)
+#   GEMINI_MODEL=gemini-flash-lite-latest
+
+# 3. Desarrollo / dev
 npm run dev
 ```
 
-Open **http://localhost:3000** in **two browser tabs** (or share your machine on the
-network). Enter a name in each. In one tab click **"I'll draw"**, start sketching, and
-watch the other tab render it live while the AI guesses in the chat.
+Abre **http://localhost:3000** en dos ventanas (o una normal + una incógnito) para
+verlo en vivo. La IA funciona con la clave de Gemini; sin ella, el juego en tiempo
+real sigue andando y la IA simplemente no participa.
 
 ---
 
-## Demo script (for the 2-minute pitch)
+## ✨ Características / Features
 
-1. Two tabs side by side, both joined. Point out the live presence count.
-2. Tab A clicks **I'll draw**, gets a word (e.g. *rocket*). Start drawing slowly.
-3. Tab B sees strokes appear in real time — that's Portal fan-out.
-4. The **🤖 AI** starts guessing in chat as the shape forms: *"pencil… tower… rocket!"*
-5. Whoever nails it first (human or AI) wins — scoreboard updates for everyone live.
-6. One line to land it: *"People, an AI agent, and live data all sharing one realtime
-   surface — that's the whole point of Portal."*
+- 🎨 Lienzo compartido en tiempo real (trazos, colores, borrar)
+- 🤖 IA que adivina y dibuja su propio turno
+- 🏠 Salas con código · 👥 presencia en vivo · 💬 chat de respuestas
+- 🖱️ Cursores en vivo · 🎉 reacciones con emojis · 💡 pistas con IA
+- 🔁 Rotación de turnos · ⏱️ temporizador de ronda · 🏆 podio final
+- 🌗 Tema claro/oscuro · 🔊 sonido de victoria
 
 ---
 
-## Project layout
-
-```
-src/
-  app/
-    page.tsx            # Lobby -> Game, wrapped in <PortalProvider>
-    api/guess/route.ts  # server-only vision call (AI guesser)
-  components/
-    Canvas.tsx          # drawing + streaming/rendering strokes over Portal
-    Chat.tsx            # guess feed + input
-    Game.tsx            # channels, rounds, scoring, AI loop (orchestrator)
-    Lobby.tsx           # name entry
-  lib/
-    portal.ts           # Portal client (anonymous mode)
-    types.ts            # channel message shapes + channel ids
-    words.ts            # word bank, masking, fuzzy match
-```
-
-## Ideas to push it further this weekend
-
-- **AI draws too**: on its turn, generate strokes and publish them incrementally.
-- **Live cursors** of the drawer's pen via Portal presence metadata.
-- **In-app notifications** (Portal inbox) to ping players when a new round starts.
-- **Rooms**: make the room id a URL param instead of the fixed `main`.
-- **Reactions**: ephemeral emoji fan-out over a `reactions:main` channel.
+<p align="center"><sub>Hecho con 🎨 y ⚡ por <b>Trazando con IA</b> · Powered by Portal</sub></p>
