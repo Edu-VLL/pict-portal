@@ -26,7 +26,7 @@ export default function Scoreboard({ scores }: { scores: [string, number][] }) {
 
   return (
     <div className="rounded-xl border border-edge bg-panel px-4 py-3">
-      <span className="text-xs uppercase tracking-wide text-white/40">Scoreboard</span>
+      <span className="text-xs uppercase tracking-wide text-fg/40">Scoreboard</span>
       <ul className="mt-2 flex flex-col gap-1.5">
         {scores.map(([name, score], i) => {
           const isAi = name === "🤖 AI";
@@ -42,14 +42,14 @@ export default function Scoreboard({ scores }: { scores: [string, number][] }) {
                 {MEDALS[i] ?? `${i + 1}.`}
               </span>
               {isAi ? (
-                <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-xs">
+                <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-fg/10 text-xs">
                   🤖
                 </span>
               ) : (
                 <PlayerBadge name={displayName} />
               )}
-              <span className="flex-1 truncate text-sm text-white/80">{displayName}</span>
-              <span className="font-mono text-sm font-semibold text-white/90">{score}</span>
+              <span className="flex-1 truncate text-sm text-fg/80">{displayName}</span>
+              <span className="font-mono text-sm font-semibold text-fg/90">{score}</span>
             </li>
           );
         })}

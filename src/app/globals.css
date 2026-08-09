@@ -2,11 +2,40 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Light is the default palette; dark overrides via system preference or the
+   explicit toggle (see ThemeToggle.tsx, which sets data-theme + localStorage). */
+:root {
+  --color-ink: 243 244 246;
+  --color-panel: 255 255 255;
+  --color-edge: 226 228 233;
+  --color-fg: 21 23 28;
+  --color-accent: 99 102 241;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-ink: 15 17 21;
+    --color-panel: 23 26 33;
+    --color-edge: 38 43 54;
+    --color-fg: 230 232 236;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-ink: 15 17 21;
+  --color-panel: 23 26 33;
+  --color-edge: 38 43 54;
+  --color-fg: 230 232 236;
+  color-scheme: dark;
+}
+
 html,
 body {
   height: 100%;
-  background: #0f1115;
-  color: #e6e8ec;
+  background: rgb(var(--color-ink));
+  color: rgb(var(--color-fg));
 }
 
 * {

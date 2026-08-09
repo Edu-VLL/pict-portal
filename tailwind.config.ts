@@ -5,10 +5,14 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: "#0f1115",
-        panel: "#171a21",
-        edge: "#262b36",
-        accent: "#6366f1",
+        ink: "rgb(var(--color-ink) / <alpha-value>)",
+        panel: "rgb(var(--color-panel) / <alpha-value>)",
+        edge: "rgb(var(--color-edge) / <alpha-value>)",
+        accent: "rgb(var(--color-accent) / <alpha-value>)",
+        // Replaces literal `white/NN` opacity utilities everywhere except a
+        // few spots that are deliberately theme-independent (text on a solid
+        // accent button, the badge initials, the drawing canvas overlay).
+        fg: "rgb(var(--color-fg) / <alpha-value>)",
       },
     },
   },
