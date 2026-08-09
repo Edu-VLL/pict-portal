@@ -5,8 +5,10 @@ import { useChannel } from "@portalsdk/react";
 import Canvas from "./Canvas";
 import Chat, { FeedItem } from "./Chat";
 import PlayerBadge from "./PlayerBadge";
+import PlayersPanel, { PlayerRow } from "./PlayersPanel";
 import Scoreboard from "./Scoreboard";
 import Status from "./Status";
+import ThemeToggle from "./ThemeToggle";
 import {
   ChatMsg,
   GameMsg,
@@ -37,12 +39,56 @@ const NO_ROUND: Round = {
   id: 0,
 };
 
-export default function Game({ name, roomCode }: { name: string, roomCode: string}) {
+export default function Game({
+  name,
+  roomCode,
+  onLeave,
+}: {
+  name: string;
+  roomCode: string;
+  onLeave: () => void;
+}) {
   // ---- Channels -------------------------------------------------------------
+  // Players who just hit "Leave" — excluded from the roster the instant their
+  // player-left broadcast arrives, instead of waiting out the activity
+  // heartbeat's ~5s expiry. Self-clears after a few seconds so it never
+  // permanently blocks the same (session-stable, anonymous) id from
+  // reappearing if they rejoin.
+  const [justLeftIds, setJustLeftIds] = useState<Set<string>>(() => new Set());
+
   const game = useChannel<GameMsg>({
     channelId: gameChannel(roomCode),
     metadata: { name },
+    onMessage: (m) => {
+      if (m.content.kind !== "player-left") return;
+      const id = m.content.playerId;
+      setJustLeftIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+      setTimeout(() => {
+        setJustLeftIds((prev) => {
+          if (!prev.has(id)) return prev;
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }, 6000);
+    },
   });
+
+  // Display names, keyed by player id — kept current via our own
+  // `name-update` broadcast (see the effect below) rather than presence
+  // `metadata`, which only seeds a *new* channel handle and doesn't actually
+  // get re-announced by `setMetadata()` on this backend (verified live).
+  // Derived from `game.messages` (not accumulated via onMessage): onMessage
+  // only fires for messages delivered live, never for ones a late joiner
+  // gets from history backfill — reading `messages` instead covers both, the
+  // same way the round derivation below does.
+  const namesById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const m of game.messages) {
+      if (m.content.kind === "name-update") map.set(m.content.playerId, m.content.name);
+    }
+    return map;
+  }, [game.messages]);
 
   const wordRef = useRef<string | null>(null); // known only to the drawer
   const endedRef = useRef(false); // guards against double round-end
@@ -76,6 +122,26 @@ export default function Game({ name, roomCode }: { name: string, roomCode: strin
   useEffect(() => {
     sendChatRef.current = (content: ChatMsg) => void chat.send({ content });
   }, [chat.send]);
+
+  // The initial history page isn't fetched automatically on connect (verified
+  // live: `messages` comes back empty with `hasPrevious: true` until this is
+  // called at least once) — without it, a late joiner's `game.messages` is
+  // missing everything that happened before they connected: the active
+  // round's round-start, and other players' name-update broadcasts.
+  const loadedGameHistory = useRef(false);
+  useEffect(() => {
+    if (game.status !== "ready" || loadedGameHistory.current) return;
+    loadedGameHistory.current = true;
+    void game.loadPrevious();
+  }, [game.status, game.loadPrevious]);
+
+  const loadedChatHistory = useRef(false);
+  useEffect(() => {
+    if (chat.status !== "ready" || loadedChatHistory.current) return;
+    loadedChatHistory.current = true;
+    void chat.loadPrevious();
+  }, [chat.status, chat.loadPrevious]);
+
 
   // ---- Derived round state --------------------------------------------------
   const round: Round = useMemo(() => {
@@ -116,31 +182,53 @@ export default function Game({ name, roomCode }: { name: string, roomCode: strin
     isDrawerRef.current = isDrawer;
   }, [isDrawer]);
 
+  // Tell everyone our current name — on first join, and again if it ever
+  // changes (e.g. Leave then rejoin under a new name in the same tab).
+  useEffect(() => {
+    if (!meId) return;
+    void game.send({ content: { kind: "name-update", playerId: meId, name } });
+  }, [meId, name, game.send]);
+
+  // ---- Liveness heartbeat ----------------------------------------------------
+  // Portal's own `presence` reflects the socket's state server-side, which can
+  // lag well behind an actual disconnect (a clean tab close alone can take
+  // ~30s+ to propagate as a "leave", longer for a crash/network drop — there's
+  // no client knob to tighten that). `activity` entries instead self-expire on
+  // every OTHER client after ACTIVITY_EXPIRY_MS (5s) if they stop arriving, so
+  // pinging "online" here gives everyone a roster that actually clears out
+  // within seconds of someone disappearing, regardless of why.
+  useEffect(() => {
+    if (!meId) return;
+    const ping = game.sendActivity;
+    ping("online");
+    const iv = setInterval(() => ping("online"), 3500);
+    return () => clearInterval(iv);
+  }, [meId, game.sendActivity]);
+
   // ---- Turn rotation: who draws next ---------------------------------------
-  // Everyone currently in the room (from presence), plus ourselves, sorted so
-  // every client agrees on the order.
+  // Everyone currently pinging "online" (see heartbeat above), plus ourselves
+  // so we never briefly vanish from our own list before our first ping echoes
+  // back, sorted so every client agrees on the order.
   const roster = useMemo(() => {
     const ids = new Set<string>();
-    const p = game.presence;
-    if (p?.kind === "detailed") {
-      for (const u of p.participants) ids.add(u.id);
+    for (const a of game.activity) {
+      if (a.kind === "online") ids.add(a.userId);
     }
     if (meId) ids.add(meId);
+    for (const id of justLeftIds) ids.delete(id);
     return [...ids].sort();
-  }, [game.presence, meId]);
+  }, [game.activity, meId, justLeftIds]);
 
-  const nameById = useMemo(() => {
-    const map = new Map<string, string>();
-    const p = game.presence;
-    if (p?.kind === "detailed") {
-      for (const u of p.participants) {
-        const n = (u.metadata as { name?: string } | undefined)?.name;
-        if (n) map.set(u.id, n);
-      }
-    }
-    return map;
-  }, [game.presence]);
 
+  const players: PlayerRow[] = useMemo(() => {
+    return roster.map((id) => ({
+      id,
+      name: id === meId ? name : namesById.get(id) ?? "player",
+      isMe: id === meId,
+      isDrawer: round.active && id === round.drawerId,
+      isTyping: chat.typing.includes(id),
+    }));
+  }, [roster, meId, name, namesById, round.active, round.drawerId, chat.typing]);
 
   // ---- Round control --------------------------------------------------------
   const lastStartRef = useRef(0); // local debounce against double-clicks
@@ -182,6 +270,25 @@ export default function Game({ name, roomCode }: { name: string, roomCode: strin
   useEffect(() => {
     endRoundRef.current = endRound;
   }, [endRound]);
+
+  // A deliberate "Leave" click is a controlled moment, unlike a crash/dropped
+  // connection: we can announce it explicitly instead of leaving everyone
+  // else to *infer* we're gone, which is bounded by Portal's ~5s
+  // activity-expiry floor (see the roster effect below). Ephemeral — this is
+  // a one-off signal, not something a late joiner needs replayed.
+  function handleLeave() {
+    if (meId) void game.send({ content: { kind: "player-left", playerId: meId } });
+    if (isDrawer && round.active) {
+      void chat.send({
+        content: {
+          kind: "system",
+          text: `${name} left — round ended. Anyone can start a new one.`,
+        },
+      });
+      endRound();
+    }
+    onLeave();
+  }
 
   // ---- AI guessing loop (drawer only) --------------------------------------
   useEffect(() => {
@@ -237,6 +344,51 @@ export default function Game({ name, roomCode }: { name: string, roomCode: strin
 
   const secondsLeft = round.active ? Math.max(0, Math.ceil((round.endsAt - now) / 1000)) : 0;
 
+  // ---- Abandoned round: the drawer disconnected ------------------------------
+  // Fallback path for a crash/dropped connection — a deliberate "Leave" click
+  // is handled instantly by handleLeave() above, which sends its own
+  // round-end before the drawer even disconnects. This path exists for the
+  // case where there's no chance to say goodbye: `roster` only drops the
+  // drawer once their activity ping hasn't been renewed for
+  // ACTIVITY_EXPIRY_MS (a fixed 5s inside the Portal SDK, not something we
+  // can configure), so ~5s is the fastest this path can ever detect a real
+  // disconnect. Only the drawer's own browser knows the word and validates
+  // guesses (see the chat onMessage handler above), so once they're gone
+  // nobody can mark a guess correct — end the round early instead of making
+  // everyone wait out the full 90s timer.
+  const drawerMissing =
+    round.active && !!round.drawerId && !roster.includes(round.drawerId);
+  // Only the lowest-sorted currently-present id acts, so connected clients don't
+  // all race to publish the same round-end at once.
+  const isAbandonLeader = drawerMissing && roster.length > 0 && roster[0] === meId;
+
+  const abandonedRoundIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!isAbandonLeader) return;
+    const sendChat = chat.send;
+    const sendGame = game.send;
+    const drawerName = round.drawerName;
+    const roundId = round.id;
+    const timer = setTimeout(() => {
+      if (abandonedRoundIdRef.current === roundId) return;
+      abandonedRoundIdRef.current = roundId;
+      void sendChat({
+        content: {
+          kind: "system",
+          text: `${drawerName} left — round ended. Anyone can start a new one.`,
+        },
+      });
+      void sendGame({ content: { kind: "round-end", word: "?" } });
+    }, 1500); // short extra grace on top of the ~5s floor above, tuned down
+    // from an earlier 6s now that this path only ever fires for real
+    // disconnects (deliberate leaves take the instant path instead)
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- chat.send/game.send
+    // are the stable pieces; the whole `chat`/`game` objects are recreated every
+    // render (useChannel doesn't memoize its return value) and would reset this
+    // timer before it ever fires.
+  }, [isAbandonLeader, round.id, round.drawerName, chat.send, game.send]);
+
   // ---- Waiting room ---------------------------------------------------------
   // The waiting room shows whenever there is no active round (before the game
   // and between rounds). The countdown resets each time we return to it, then a
@@ -278,24 +430,59 @@ export default function Game({ name, roomCode }: { name: string, roomCode: strin
   // ---- UI -------------------------------------------------------------------
   const wordLabel = isDrawer ? wordRef.current ?? "" : round.masked;
 
+  // Connecting to Portal (minting an anonymous identity + subscribing to
+  // each channel) reliably takes a couple of seconds — verified against the
+  // live backend, not something a client-side tweak can shrink much
+  // further. Cover the real UI with a deliberate loading veil instead of
+  // letting it limp in piecemeal (empty roster, "0 online", an
+  // unresponsive canvas), which reads as broken rather than "still
+  // loading" — but keep everything mounted underneath (rather than an
+  // early return) so Canvas's own draw-channel connection still starts
+  // immediately, in parallel with game/chat, instead of waiting for them.
+  const connecting = game.status !== "ready" || chat.status !== "ready";
+
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-4 p-4 lg:h-screen lg:flex-row">
-      {/* Left: canvas + status */}
+    <div className="relative mx-auto flex max-w-7xl flex-col gap-4 p-4 lg:h-screen lg:flex-row">
+      {connecting && (
+        <div className="absolute inset-0 z-10 grid place-items-center bg-ink">
+          <div className="flex flex-col items-center gap-3 text-center">
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-fg/20 border-t-accent" />
+            <p className="text-sm text-fg/60">Connecting to room {roomCode}…</p>
+            <button onClick={onLeave} className="text-xs text-fg/40 underline hover:text-fg/60">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Left: players panel */}
+      <PlayersPanel players={players} />
+
+      {/* Center: canvas + status */}
       <div className="flex flex-1 flex-col gap-3">
         <header className="flex flex-wrap items-center justify-between gap-2">
-          <h1 className="text-lg font-semibold">
-            Pict<span className="text-accent">-Portal</span>
-          </h1>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleLeave}
+              className="flex items-center gap-1 rounded-md border border-edge px-2.5 py-1 text-sm text-fg/60 hover:bg-fg/5 hover:text-fg/90"
+              title="Leave room"
+            >
+              ← Leave
+            </button>
+            <h1 className="text-lg font-semibold">
+              Pict<span className="text-accent">-Portal</span>
+            </h1>
+          </div>
           <div className="flex items-center gap-5">
-            <span className="font-mono tracking-widest text-white/80">
+            <span className="font-mono tracking-widest text-fg/80">
               Room:{roomCode}
             </span>
             <Status status={game.status} />
-            <div className="flex items-center gap-1.5 text-xs text-white/50">
-              {game.presence?.count ?? 1} online · you are{" "}
-              <PlayerBadge name={name} />
-              <span className="text-white/80">{name}</span>
+            <div className="flex items-center gap-1.5 text-xs text-fg/50">
+              you are <PlayerBadge name={name} />
+              <span className="text-fg/80">{name}</span>
             </div>
+            <ThemeToggle />
           </div>
         </header>
 
@@ -312,11 +499,11 @@ export default function Game({ name, roomCode }: { name: string, roomCode: strin
                   </>
                 ) : (
                   <>
-                    <span className="inline-flex items-center gap-1.5 text-white/60">
+                    <span className="inline-flex items-center gap-1.5 text-fg/60">
                       <PlayerBadge name={round.drawerName} />
                       {round.drawerName} is drawing
                     </span>{" "}
-                    <span className="ml-2 font-mono tracking-widest text-white/90">
+                    <span className="ml-2 font-mono tracking-widest text-fg/90">
                       {round.masked}
                     </span>
                   </>
@@ -324,7 +511,7 @@ export default function Game({ name, roomCode }: { name: string, roomCode: strin
               </div>
               <div
                 className={`font-mono text-lg ${
-                  secondsLeft <= 10 ? "text-red-400" : "text-white/70"
+                  secondsLeft <= 10 ? "text-red-400" : "text-fg/70"
                 }`}
               >
                 {secondsLeft}s
@@ -333,22 +520,8 @@ export default function Game({ name, roomCode }: { name: string, roomCode: strin
           ) : (
             <div className="flex w-full items-center justify-between">
               <div className="text-sm">
-                <div className="font-medium text-white/80">Waiting room</div>
-                <div className="mt-1 flex flex-wrap items-center gap-2">
-                  {roster.map((id) => {
-                    const n = id === meId ? name : nameById.get(id) ?? "player";
-                    return (
-                      <span
-                        key={id}
-                        className="inline-flex items-center gap-1.5 rounded-full bg-white/5 px-2 py-0.5 text-xs text-white/70"
-                      >
-                        <PlayerBadge name={n} />
-                        {n}
-                      </span>
-                    );
-                  })}
-                </div>
-                <div className="mt-1 text-xs text-white/40">
+                <div className="font-medium text-fg/80">Waiting room</div>
+                <div className="mt-1 text-xs text-fg/40">
                   Game starts in {lobbySecondsLeft}s — waiting for players. Anyone can
                   press Start.
                 </div>
@@ -384,6 +557,7 @@ export default function Game({ name, roomCode }: { name: string, roomCode: strin
           onSend={(text) =>
             void chat.send({ content: { kind: "guess", name, text } })
           }
+          onTyping={() => chat.sendTyping()}
         />
       </div>
     </div>

@@ -12,7 +12,11 @@ export default function Page() {
   return (
     <PortalProvider client={portal}>
       {session ? (
-        <Game name={session.name} roomCode={session.roomCode} />
+        <Game
+          name={session.name}
+          roomCode={session.roomCode}
+          onLeave={() => setSession(null)}
+        />
       ) : (
         <Lobby onJoin={(name, roomCode) => setSession({ name, roomCode })} />
       )}
