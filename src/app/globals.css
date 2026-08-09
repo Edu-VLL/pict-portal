@@ -45,3 +45,45 @@ body {
 canvas {
   touch-action: none;
 }
+
+/* Avisos: entran deslizándose desde arriba. */
+@keyframes pp-drop {
+  from {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Reacciones: suben desvaneciéndose, con una leve deriva lateral. */
+@keyframes pp-float {
+  0% {
+    opacity: 0;
+    transform: translateY(0) scale(0.6);
+  }
+  15% {
+    opacity: 1;
+    transform: translateY(-12vh) scale(1.1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-46vh) translateX(3vw) scale(0.9);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @keyframes pp-float {
+    0% {
+      opacity: 0;
+    }
+    20% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+}

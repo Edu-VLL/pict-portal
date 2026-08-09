@@ -5,7 +5,9 @@ import { useChannel } from "@portalsdk/react";
 import Canvas from "./Canvas";
 import Celebration from "./Celebration";
 import Chat, { FeedItem } from "./Chat";
+import Notifications, { useToasts } from "./Notifications";
 import PlayerBadge from "./PlayerBadge";
+import Reactions from "./Reactions";
 import PlayersPanel, { PlayerRow } from "./PlayersPanel";
 import Scoreboard from "./Scoreboard";
 import Status from "./Status";
@@ -342,7 +344,7 @@ export default function Game({
         content: {
           kind: "round-start",
           drawerId: meId,
-          drawerName: aiDrawing ? "🤖 AI" : name,
+          drawerName: aiDrawing ? "🤖 IA" : name,
           masked: maskWord(word),
           endsAt,
           ...(aiDrawing ? { aiDrawing: true } : {}),
@@ -369,7 +371,7 @@ export default function Game({
         content: {
           kind: "round-start",
           drawerId: meId,
-          drawerName: aiDrawing ? "🤖 AI" : name,
+          drawerName: aiDrawing ? "🤖 IA" : name,
           masked: maskWord(word),
           endsAt: Date.now() + ROUND_MS,
           ...(aiDrawing ? { aiDrawing: true } : {}),
@@ -415,8 +417,8 @@ export default function Game({
             // Guessers otherwise just see the blanks silently change shape and
             // wonder whether they missed something.
             text: round.aiDrawing
-              ? "⏭ New word — the 🤖 AI is drawing again. Ignore the last sketch!"
-              : `⏭ ${name} swapped the word — start guessing again!`,
+              ? "⏭ Palabra nueva — la 🤖 IA está dibujando otra vez. ¡Olvida el dibujo anterior!"
+              : `⏭ ${name} cambió la palabra — ¡a adivinar de nuevo!`,
           },
         });
         reRollWord(round.aiDrawing);
@@ -432,7 +434,7 @@ export default function Game({
           hintsExhaustedSaidRef.current = true;
           sendChatRef.current?.({
             kind: "system",
-            text: "💡 That's all the hints for this round.",
+            text: "💡 No quedan más pistas en esta ronda.",
           });
         }
         return;
@@ -458,8 +460,8 @@ export default function Game({
         // If the model is unavailable or refuses, still give something useful
         // rather than leaving the button feeling broken.
         const text = hint
-          ? `💡 Hint: ${hint}`
-          : `💡 Hint: ${revealLetters(word, hintsRef.current.length + 1)}`;
+          ? `💡 Pista: ${hint}`
+          : `💡 Pista: ${revealLetters(word, hintsRef.current.length + 1)}`;
         hintsRef.current = [...hintsRef.current, hint ?? text];
         sendChatRef.current?.({ kind: "system", text });
       })();
@@ -523,8 +525,8 @@ export default function Game({
       content: {
         kind: "system",
         text: word
-          ? `Round ended early — the word was “${word}”.`
-          : "Round ended early.",
+          ? `Ronda terminada — la palabra era «${word}».`
+          : "Ronda terminada.",
       },
     });
     endRound();
@@ -535,7 +537,7 @@ export default function Game({
     void chat.send({
       content: {
         kind: "system",
-        text: aiEnabled ? "🤖 AI benched." : "🤖 AI joined the game.",
+        text: aiEnabled ? "🤖 La IA se va a la banca." : "🤖 La IA entra al juego.",
       },
     });
   }
@@ -551,7 +553,7 @@ export default function Game({
       void chat.send({
         content: {
           kind: "system",
-          text: `${name} left — round ended. Anyone can start a new one.`,
+          text: `${name} salió — ronda terminada. Cualquiera puede empezar otra.`,
         },
       });
       endRound();
@@ -586,7 +588,7 @@ export default function Game({
           if (!cancelled) {
             sendChatRef.current?.({
               kind: "system",
-              text: "🤖 The AI couldn't sketch that one — starting a new round.",
+              text: "🤖 La IA no pudo dibujar esa palabra — empezamos otra ronda.",
             });
             endRoundRef.current?.();
           }
@@ -655,11 +657,11 @@ export default function Game({
           !!word && [data.guess, ...(data.alternatives ?? [])].some((c) => isCorrect(c, word));
         if (data.guess !== lastGuess || won) {
           lastGuess = data.guess;
-          sendChatRef.current?.({ kind: "guess", name: "AI", text: data.guess, ai: true });
+          sendChatRef.current?.({ kind: "guess", name: "IA", text: data.guess, ai: true });
         }
         if (won && word) {
-          sendChatRef.current?.({ kind: "correct", name: "AI", word, ai: true });
-          endRoundRef.current?.("AI", true);
+          sendChatRef.current?.({ kind: "correct", name: "IA", word, ai: true });
+          endRoundRef.current?.("IA", true);
         }
       } catch {
         /* transient — try again next tick */
@@ -761,7 +763,7 @@ export default function Game({
       void sendChat({
         content: {
           kind: "system",
-          text: `${drawerName} left — round ended. Anyone can start a new one.`,
+          text: `${drawerName} salió — ronda terminada. Cualquiera puede empezar otra.`,
         },
       });
       void sendGame({ content: { kind: "round-end", word: "?" } });
@@ -804,7 +806,7 @@ export default function Game({
     const map = new Map<string, number>();
     for (const m of chat.messages) {
       if (m.content.kind === "correct") {
-        const key = m.content.ai ? "🤖 AI" : m.content.name;
+        const key = m.content.ai ? "🤖 IA" : m.content.name;
         map.set(key, (map.get(key) ?? 0) + 1);
       }
     }
@@ -834,6 +836,29 @@ export default function Game({
     }
     return null;
   }, [chat.messages, meId, name]);
+
+  // ---- Avisos in-app --------------------------------------------------------
+  const { toasts, push: pushToast } = useToasts();
+  const notifiedRoundRef = useRef<number | null>(null);
+  const notifiedTurnRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!round.active || round.id === notifiedRoundRef.current) return;
+    notifiedRoundRef.current = round.id;
+    if (isDrawer && !round.aiDrawing) pushToast("✏️ ¡Te toca dibujar!", "turn");
+    else if (round.aiDrawing) pushToast("🤖 La IA está dibujando — ¡a adivinar!");
+    else pushToast(`🎨 Dibuja ${round.drawerName} — ¡a adivinar!`);
+  }, [round.active, round.id, round.aiDrawing, round.drawerName, isDrawer, pushToast]);
+
+  // Aviso anticipado en la sala de espera: saber que sigues tú antes de que
+  // arranque la ronda es lo que evita el "¿ya empezó?".
+  useEffect(() => {
+    if (round.active || !nextTurnId) return;
+    const key = `${nextTurnId}:${roundsPlayed}`;
+    if (key === notifiedTurnRef.current) return;
+    notifiedTurnRef.current = key;
+    if (isMyTurn) pushToast("👉 Eres el siguiente en dibujar", "turn");
+  }, [round.active, nextTurnId, roundsPlayed, isMyTurn, pushToast]);
 
   const [hintPending, setHintPending] = useState(false);
   const [skipPending, setSkipPending] = useState(false);
@@ -893,14 +918,15 @@ export default function Game({
   return (
     <div className="relative mx-auto flex max-w-7xl flex-col gap-4 p-4 lg:h-screen lg:flex-row">
       <Celebration trigger={myWinId} muted={muted} armed={chatHistoryLoaded} />
+      <Notifications toasts={toasts} />
 
       {connecting && (
         <div className="absolute inset-0 z-10 grid place-items-center bg-ink">
           <div className="flex flex-col items-center gap-3 text-center">
             <div className="h-8 w-8 animate-spin rounded-full border-2 border-fg/20 border-t-accent" />
-            <p className="text-sm text-fg/60">Connecting to room {roomCode}…</p>
+            <p className="text-sm text-fg/60">Conectando a la sala {roomCode}…</p>
             <button onClick={onLeave} className="text-xs text-fg/40 underline hover:text-fg/60">
-              Cancel
+              Cancelar
             </button>
           </div>
         </div>
@@ -923,9 +949,9 @@ export default function Game({
             <button
               onClick={handleLeave}
               className="flex items-center gap-1 rounded-md border border-edge px-2.5 py-1 text-sm text-fg/60 hover:bg-fg/5 hover:text-fg/90"
-              title="Leave room"
+              title="Salir de la sala"
             >
-              ← Leave
+              ← Salir
             </button>
             <h1 className="text-lg font-semibold">
               Pict<span className="text-accent">-Portal</span>
@@ -933,17 +959,17 @@ export default function Game({
           </div>
           <div className="flex items-center gap-5">
             <span className="font-mono tracking-widest text-fg/80">
-              Room:{roomCode}
+              Sala:{roomCode}
             </span>
             <Status status={game.status} />
             <div className="flex items-center gap-1.5 text-xs text-fg/50">
-              you are <PlayerBadge name={name} />
+              eres <PlayerBadge name={name} />
               <span className="text-fg/80">{name}</span>
             </div>
             <button
               onClick={toggleMuted}
-              title={muted ? "Unmute win sound" : "Mute win sound"}
-              aria-label="Toggle sound"
+              title={muted ? "Activar sonido de victoria" : "Silenciar sonido de victoria"}
+              aria-label="Cambiar sonido"
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-edge text-fg/70 hover:bg-fg/5 hover:text-fg/90"
             >
               {muted ? "🔇" : "🔊"}
@@ -958,7 +984,7 @@ export default function Game({
               <div className="text-sm">
                 {isDrawer && !round.aiDrawing ? (
                   <>
-                    You are drawing:{" "}
+                    Estás dibujando:{" "}
                     <span className="font-mono text-base font-semibold text-accent">
                       {wordLabel}
                     </span>
@@ -973,7 +999,7 @@ export default function Game({
                       ) : (
                         <PlayerBadge name={round.drawerName} />
                       )}
-                      {round.drawerName} is drawing
+                      {round.drawerName} está dibujando
                     </span>{" "}
                     <span className="ml-2 font-mono tracking-widest text-fg/90">
                       {round.masked}
@@ -993,29 +1019,29 @@ export default function Game({
                   <button
                     onClick={requestHint}
                     disabled={hintPending}
-                    title="Ask the AI for a clue (up to 3 per round)"
+                    title="Pídele una pista a la IA (hasta 3 por ronda)"
                     className="rounded-md border border-edge px-3 py-1.5 text-sm text-fg/60 hover:bg-fg/5 hover:text-fg/90 disabled:opacity-50"
                   >
-                    {hintPending ? "💡 Asking…" : "💡 Hint"}
+                    {hintPending ? "💡 Pidiendo…" : "💡 Pista"}
                   </button>
                 )}
                 {(isDrawer || round.aiDrawing) && (
                   <button
                     onClick={requestSkip}
                     disabled={skipPending}
-                    title="Swap in a different word and keep this turn"
+                    title="Cambiar la palabra sin perder el turno"
                     className="rounded-md border border-edge px-3 py-1.5 text-sm text-fg/60 hover:bg-fg/5 hover:text-fg/90 disabled:opacity-50"
                   >
-                    {skipPending ? "⏭ Skipping…" : "⏭ Skip word"}
+                    {skipPending ? "⏭ Cambiando…" : "⏭ Cambiar palabra"}
                   </button>
                 )}
                 {isDrawer && (
                   <button
                     onClick={endRoundNow}
-                    title="End this round now and go back to the waiting room"
+                    title="Terminar la ronda ahora y volver a la sala de espera"
                     className="rounded-md border border-edge px-3 py-1.5 text-sm text-fg/60 hover:bg-fg/5 hover:text-fg/90"
                   >
-                    End round
+                    Terminar ronda
                   </button>
                 )}
               </div>
@@ -1023,25 +1049,25 @@ export default function Game({
           ) : (
             <div className="flex w-full items-center justify-between">
               <div className="text-sm">
-                <div className="font-medium text-fg/80">Waiting room</div>
+                <div className="font-medium text-fg/80">Sala de espera</div>
                 <div className="mt-1 flex items-center gap-1.5 text-xs text-fg/60">
-                  <span className="text-fg/40">Next up:</span>
+                  <span className="text-fg/40">Siguiente:</span>
                   {isAiTurn ? (
                     <>
                       <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-accent/20 text-[10px]">
                         🤖
                       </span>
-                      <span>AI</span>
+                      <span>IA</span>
                     </>
                   ) : nextTurnId ? (
                     <>
                       <PlayerBadge name={nextTurnName} />
-                      <span>{isMyTurn ? "you" : nextTurnName}</span>
+                      <span>{isMyTurn ? "tú" : nextTurnName}</span>
                     </>
                   ) : (
                     <span>—</span>
                   )}
-                  <span className="text-fg/40">· starts in {lobbySecondsLeft}s</span>
+                  <span className="text-fg/40">· empieza en {lobbySecondsLeft}s</span>
                 </div>
               </div>
               {iStartNextRound && (
@@ -1050,7 +1076,7 @@ export default function Game({
                   disabled={!meId}
                   className="shrink-0 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
                 >
-                  {isAiTurn ? "🤖 Start the AI's turn" : "Start my turn"}
+                  {isAiTurn ? "🤖 Empezar el turno de la IA" : "Empezar mi turno"}
                 </button>
               )}
             </div>
@@ -1064,7 +1090,12 @@ export default function Game({
           drawStrokeRef={drawStrokeRef}
           aiDrawing={round.aiDrawing}
           roomCode={roomCode}
+          name={name}
         />
+
+        <div className="flex items-center justify-between gap-3">
+          <Reactions roomCode={roomCode} name={name} />
+        </div>
 
         <Scoreboard scores={scores} />
       </div>
@@ -1078,10 +1109,10 @@ export default function Game({
           disabled={(isDrawer && !round.aiDrawing) || !round.active}
           placeholder={
             !round.active
-              ? "Start a round to begin"
+              ? "Empieza una ronda para jugar"
               : isDrawer && !round.aiDrawing
-                ? "You're drawing — no peeking 🙂"
-                : "Type your guess…"
+                ? "Estás dibujando — sin espiar 🙂"
+                : "Escribe tu respuesta…"
           }
           onSend={submitGuess}
           onTyping={() => chat.sendTyping()}

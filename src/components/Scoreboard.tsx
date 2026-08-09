@@ -26,11 +26,11 @@ export default function Scoreboard({ scores }: { scores: [string, number][] }) {
 
   return (
     <div className="rounded-xl border border-edge bg-panel px-4 py-3">
-      <span className="text-xs uppercase tracking-wide text-fg/40">Scoreboard</span>
+      <span className="text-xs uppercase tracking-wide text-fg/40">Marcador</span>
       <ul className="mt-2 flex flex-col gap-1.5">
         {scores.map(([name, score], i) => {
-          const isAi = name === "🤖 AI";
-          const displayName = isAi ? "AI" : name;
+          const isAi = name === "🤖 IA";
+          const displayName = isAi ? "IA" : name;
           return (
             <li
               key={name}

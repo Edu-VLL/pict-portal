@@ -33,61 +33,69 @@ export async function POST(req: NextRequest): Promise<NextResponse<DrawResult>> 
   }
 
   const prompt =
-    `You are playing Pictionary and it's your turn to DRAW the word "${word}".\n` +
-    `Produce a simple, bold line drawing that a human can recognize — like a whiteboard doodle.\n` +
-    `Reply with STRICT JSON only, no prose, no code fences:\n` +
+    `Estás jugando Pictionary y te toca DIBUJAR la palabra "${word}".\n` +
+    `Haz un dibujo de líneas simple y claro que un humano reconozca, como un garabato de pizarra.\n` +
+    `Responde SOLO con JSON estricto, sin prosa ni bloques de código:\n` +
     `{"strokes":[{"points":[[x,y],[x,y],...]}, ...]}\n` +
-    `Rules: coordinates are normalized floats 0..1 ("x" left to right, "y" top to bottom).\n` +
-    `Use 3-12 strokes. Each stroke is a connected polyline of 2-40 points.\n` +
-    `Fill the canvas: span roughly x 0.15-0.85 and y 0.15-0.85. Draw the whole object, centered.\n` +
-    `For curves, emit many short segments. Close shapes by repeating the first point at the end.`;
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 20000);
+    `Reglas: las coordenadas son decimales normalizados de 0 a 1 ("x" de izquierda a derecha, "y" de arriba abajo).\n` +
+    `Usa entre 3 y 12 trazos. Cada trazo es una polilínea conectada de 2 a 40 puntos.\n` +
+    `Llena el lienzo: abarca aproximadamente x 0.15-0.85 e y 0.15-0.85. Dibuja el objeto completo y centrado.\n` +
+    `Para las curvas, usa muchos segmentos cortos. Cierra las formas repitiendo el primer punto al final.`;
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { maxOutputTokens: 4096, temperature: 0.6 },
-      }),
-      signal: controller.signal,
-    });
+  // Response time for the same prompt swings a lot (measured: 2.4s, 14s, and
+  // a >20s stall on three consecutive identical requests). One long attempt
+  // therefore fails far too often, while a retry after a shorter budget
+  // almost always lands quickly — so cap each try and allow one retry.
+  let lastReason = "timeout";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { maxOutputTokens: 4096, temperature: 0.6 },
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
 
-    clearTimeout(timeoutId);
+      if (!res.ok) {
+        const detail = await res.text();
+        console.error(`[api/draw] Gemini ${res.status}:`, detail.slice(0, 400));
+        return NextResponse.json(
+          { ok: false, reason: `gemini_${res.status}` },
+          { status: 502 },
+        );
+      }
 
-    if (!res.ok) {
-      const detail = await res.text();
-      console.error(`[api/draw] Gemini ${res.status}:`, detail.slice(0, 400));
-      return NextResponse.json(
-        { ok: false, reason: `gemini_${res.status}` },
-        { status: 502 },
-      );
-    }
-
-    const data = (await res.json()) as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-    };
-    const text =
-      data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
-    const strokes = parseStrokes(text);
-    if (!strokes) {
+      const data = (await res.json()) as {
+        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      };
+      const text =
+        data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
+      const strokes = parseStrokes(text);
+      if (strokes) {
+        console.log(`[api/draw] drew "${word}" as ${strokes.length} strokes`);
+        return NextResponse.json({ ok: true, strokes });
+      }
+      // Unparseable is also worth one more shot — it's the same coin flip.
       console.error("[api/draw] unparseable. Raw:", JSON.stringify(text).slice(0, 300));
-      return NextResponse.json({ ok: false, reason: "unparseable" });
+      lastReason = "unparseable";
+    } catch (err) {
+      clearTimeout(timeoutId);
+      const isAbort = (err as Error).name === "AbortError";
+      lastReason = isAbort ? "timeout" : `fetch_error: ${(err as Error).message}`;
+      console.error(`[api/draw] ${lastReason}${attempt === 0 ? " — retrying" : ""}`);
+      if (!isAbort) break; // a real network failure won't fix itself on retry
     }
-    console.log(`[api/draw] drew "${word}" as ${strokes.length} strokes`);
-    return NextResponse.json({ ok: true, strokes });
-  } catch (err) {
-    clearTimeout(timeoutId);
-    const isAbort = (err as Error).name === "AbortError";
-    const reason = isAbort ? "timeout" : `fetch_error: ${(err as Error).message}`;
-    console.error(`[api/draw] ${reason}`);
-    return NextResponse.json({ ok: false, reason }, { status: 502 });
   }
+
+  return NextResponse.json({ ok: false, reason: lastReason }, { status: 502 });
 }
 
 function parseStrokes(text: string): Stroke[] | null {

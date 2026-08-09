@@ -3,9 +3,9 @@ import Script from "next/script";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Pict-Portal — draw with an AI, live",
+  title: "Pict-Portal — dibuja con una IA, en vivo",
   description:
-    "Realtime multiplayer Pictionary where an AI plays alongside you. Built on Portal.",
+    "Pictionary multijugador en tiempo real donde una IA juega contigo. Hecho con Portal.",
 };
 
 export default function RootLayout({
@@ -14,7 +14,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
+    <html lang="es">
       <body className="min-h-screen antialiased">
         {/* A plain <script> in a manual <head> gets dropped by the App
             Router when a `metadata` export is also present — next/script

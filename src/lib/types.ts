@@ -68,7 +68,20 @@ export type GameMsg =
   // so the ask is broadcast and that client answers.
   | { kind: "round-request"; what: "hint" | "skip" };
 
+// cursor:<room> — posición del lápiz del dibujante, normalizada 0..1 respecto
+// al lienzo. Muy frecuente y desechable: el canal se usa con `history: "none"`
+// y cada cliente olvida un cursor que deja de reportarse.
+export type CursorMsg =
+  | { kind: "move"; x: number; y: number; name: string }
+  | { kind: "gone" };
+
+// reactions:<room> — emojis que cualquiera lanza y flotan en la pantalla de
+// todos. Fan-out puro, sin estado que reconstruir.
+export type ReactionMsg = { kind: "emoji"; emoji: string; name: string };
+
 export const ROOM = "main";
 export const drawChannel = (roomCode = ROOM) => `draw:${roomCode}`;
 export const chatChannel = (roomCode = ROOM) => `chat:${roomCode}`;
 export const gameChannel = (roomCode = ROOM) => `game:${roomCode}`;
+export const cursorChannel = (roomCode = ROOM) => `cursor:${roomCode}`;
+export const reactionsChannel = (roomCode = ROOM) => `reactions:${roomCode}`;

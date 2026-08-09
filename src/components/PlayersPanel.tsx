@@ -49,7 +49,7 @@ export default function PlayersPanel({
       ...players,
       {
         id: AI_ID,
-        name: "AI",
+        name: "IA",
         isMe: false,
         isDrawer: aiDrawing,
         isTyping: aiGuessing,
@@ -154,7 +154,7 @@ export default function PlayersPanel({
   return (
     <div className="flex w-full flex-col gap-2 rounded-xl border border-edge bg-panel px-4 py-3 lg:h-full lg:w-56 lg:shrink-0">
       <span className="text-xs uppercase tracking-wide text-fg/40">
-        Players · {roster.length}
+        Jugadores · {roster.length}
       </span>
       <ul className="flex flex-col">
         {rows.map((p) => {
@@ -183,14 +183,14 @@ export default function PlayersPanel({
                     <div className="flex items-center gap-1.5 truncate text-sm text-fg/80">
                       <span className="truncate">{p.name}</span>
                       {p.isLeader && (
-                        <span className="shrink-0" title="Room leader — controls whether the AI plays">
+                        <span className="shrink-0" title="Líder de la sala — decide si la IA juega">
                           👑
                         </span>
                       )}
-                      {p.isMe && <span className="shrink-0 text-xs text-fg/40">(you)</span>}
+                      {p.isMe && <span className="shrink-0 text-xs text-fg/40">(tú)</span>}
                       {p.isAi && <span className="shrink-0 text-xs text-fg/40">(bot)</span>}
                       {p.isDrawer && (
-                        <span className="shrink-0" title="drawing">
+                        <span className="shrink-0" title="dibujando">
                           ✏️
                         </span>
                       )}
@@ -203,7 +203,7 @@ export default function PlayersPanel({
                             <span className="h-1 w-1 animate-bounce rounded-full bg-accent [animation-delay:-0.15s]" />
                             <span className="h-1 w-1 animate-bounce rounded-full bg-accent" />
                           </span>
-                          {p.isAi ? "guessing…" : "typing…"}
+                          {p.isAi ? "adivinando…" : "escribiendo…"}
                         </span>
                       )}
                     </div>
@@ -219,15 +219,15 @@ export default function PlayersPanel({
         {showHint && (
           <div className="relative mb-2 rounded-lg border border-accent/40 bg-accent/10 p-2 text-xs text-fg/80">
             <p>
-              🤖 The <span className="font-medium">AI plays as its own player</span> — it
-              guesses, and takes its own turn to draw. You&apos;re the room leader, so
-              it&apos;s your call whether it plays.
+              🤖 La <span className="font-medium">IA juega como un jugador más</span>:
+              adivina y también tiene su propio turno para dibujar. Eres el líder de
+              la sala, así que tú decides si participa.
             </p>
             <button
               onClick={dismissHint}
               className="mt-1.5 font-medium text-accent hover:underline"
             >
-              Got it
+              Entendido
             </button>
             {/* little arrow pointing down at the toggle */}
             <span className="absolute -bottom-1 left-6 h-2 w-2 rotate-45 border-b border-r border-accent/40 bg-accent/10" />
@@ -242,7 +242,7 @@ export default function PlayersPanel({
                 : "border-edge text-fg/60 hover:bg-fg/5 hover:text-fg/90"
             }`}
           >
-            {aiEnabled ? "Bench the AI" : "Let the AI play"}
+            {aiEnabled ? "Sacar a la IA" : "Que juegue la IA"}
           </button>
         )}
       </div>
