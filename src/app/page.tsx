@@ -7,7 +7,11 @@ import Lobby from "@/components/Lobby";
 import Game from "@/components/Game";
 
 export default function Page() {
-  const [session, setSession] = useState<{ name: string; roomCode: string } | null>(null);
+  const [session, setSession] = useState<{
+    name: string;
+    roomCode: string;
+    totalRounds?: number;
+  } | null>(null);
 
   return (
     <PortalProvider client={portal}>
@@ -15,10 +19,15 @@ export default function Page() {
         <Game
           name={session.name}
           roomCode={session.roomCode}
+          totalRounds={session.totalRounds}
           onLeave={() => setSession(null)}
         />
       ) : (
-        <Lobby onJoin={(name, roomCode) => setSession({ name, roomCode })} />
+        <Lobby
+          onJoin={(name, roomCode, totalRounds) =>
+            setSession({ name, roomCode, totalRounds })
+          }
+        />
       )}
     </PortalProvider>
   );

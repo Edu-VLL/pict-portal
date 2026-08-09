@@ -66,7 +66,14 @@ export type GameMsg =
   // Anyone can ask for a clue or a different word, but only the client that
   // holds the word (the drawer, or the host of an AI turn) can act on it —
   // so the ask is broadcast and that client answers.
-  | { kind: "round-request"; what: "hint" | "skip" };
+  | { kind: "round-request"; what: "hint" | "skip" }
+  // Total rounds for this game, chosen by whoever created the room. Broadcast
+  // once so every client (including late joiners, via history) agrees on when
+  // the game ends and the podium shows. 0 = unlimited (legacy / no config).
+  | { kind: "game-config"; totalRounds: number }
+  // "Play again" in the same room: marks a new baseline so rounds-played and
+  // scores are counted only from here on, without leaving for a new room.
+  | { kind: "game-reset" };
 
 // cursor:<room> — posición del lápiz del dibujante, normalizada 0..1 respecto
 // al lienzo. Muy frecuente y desechable: el canal se usa con `history: "none"`

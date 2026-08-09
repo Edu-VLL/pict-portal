@@ -9,6 +9,7 @@ import Notifications, { useToasts } from "./Notifications";
 import PlayerBadge from "./PlayerBadge";
 import Reactions from "./Reactions";
 import PlayersPanel, { PlayerRow } from "./PlayersPanel";
+import Podium from "./Podium";
 import Scoreboard from "./Scoreboard";
 import Status from "./Status";
 import ThemeToggle from "./ThemeToggle";
@@ -57,10 +58,12 @@ const NO_ROUND: Round = {
 export default function Game({
   name,
   roomCode,
+  totalRounds: totalRoundsProp,
   onLeave,
 }: {
   name: string;
   roomCode: string;
+  totalRounds?: number;
   onLeave: () => void;
 }) {
   // ---- Channels -------------------------------------------------------------
@@ -109,6 +112,18 @@ export default function Game({
     }
     return map;
   }, [game.messages]);
+
+  // Total rounds for the game, from the creator's broadcast config (falls back
+  // to the local prop for the creator before their own broadcast echoes back,
+  // then to 0 = unlimited if a room was made without it).
+  const configuredRounds = useMemo(() => {
+    let n = 0;
+    for (const m of game.messages) {
+      if (m.content.kind === "game-config") n = m.content.totalRounds;
+    }
+    return n;
+  }, [game.messages]);
+  const totalRounds = configuredRounds || totalRoundsProp || 0;
 
   // Latest ai-toggle wins; the AI plays by default until someone benches it.
   const aiEnabled = useMemo(() => {
@@ -237,6 +252,19 @@ export default function Game({
     void game.send({ content: { kind: "name-update", playerId: meId, name } });
   }, [meId, name, game.send]);
 
+  // The room creator announces the chosen round count once, so everyone
+  // (including late joiners, via history) agrees on when the game ends.
+  const sentConfigRef = useRef(false);
+  useEffect(() => {
+    if (!meId || !totalRoundsProp || sentConfigRef.current) return;
+    if (configuredRounds) {
+      sentConfigRef.current = true; // someone already configured it
+      return;
+    }
+    sentConfigRef.current = true;
+    void game.send({ content: { kind: "game-config", totalRounds: totalRoundsProp } });
+  }, [meId, totalRoundsProp, configuredRounds, game.send]);
+
   // ---- Liveness heartbeat ----------------------------------------------------
   // Portal's own `presence` reflects the socket's state server-side, which can
   // lag well behind an actual disconnect (a clean tab close alone can take
@@ -283,13 +311,29 @@ export default function Game({
     [roster, aiEnabled],
   );
 
-  // Counts rounds that *finished*, not ones that started — so re-rolling the
-  // word mid-turn (a "skip") replaces the round without handing the turn to
-  // the next player.
+  // "Play again" drops a game-reset marker; everything after it belongs to the
+  // current game. -1 when there's never been a reset (whole history counts).
+  const lastResetIdx = useMemo(() => {
+    let idx = -1;
+    game.messages.forEach((m, i) => {
+      if (m.content.kind === "game-reset") idx = i;
+    });
+    return idx;
+  }, [game.messages]);
+
+  // Counts rounds that *finished* in the current game, not ones that started —
+  // so re-rolling the word mid-turn (a "skip") replaces the round without
+  // handing the turn to the next player.
   const roundsPlayed = useMemo(
-    () => game.messages.filter((m) => m.content.kind === "round-end").length,
-    [game.messages],
+    () =>
+      game.messages.filter(
+        (m, i) => i > lastResetIdx && m.content.kind === "round-end",
+      ).length,
+    [game.messages, lastResetIdx],
   );
+
+  // The game ends once the configured number of rounds have finished.
+  const gameOver = totalRounds > 0 && roundsPlayed >= totalRounds;
 
   const nextTurnId = turnOrder.length ? turnOrder[roundsPlayed % turnOrder.length] : undefined;
   const isAiTurn = nextTurnId === AI_TURN_ID;
@@ -530,6 +574,15 @@ export default function Game({
       },
     });
     endRound();
+  }
+
+  // "Play again" from the podium — reset the game in the SAME room instead of
+  // sending everyone back to the lobby. The game-reset marker rebaselines
+  // rounds-played and scores for everyone; the waiting room + auto-start then
+  // pick up a fresh game from turn one.
+  function startNewGame() {
+    void game.send({ content: { kind: "game-reset" } });
+    void chat.send({ content: { kind: "system", text: "🔄 ¡Nueva partida! Marcador a cero." } });
   }
 
   function toggleAi() {
@@ -796,22 +849,25 @@ export default function Game({
   // same `nextTurnId`, so exactly one client fires; the round derivation and
   // startRound's debounce still dedupe if two ever raced.
   useEffect(() => {
-    if (round.active || lobbySecondsLeft > 0 || !meId) return;
+    if (round.active || lobbySecondsLeft > 0 || !meId || gameOver) return;
     if (!iStartNextRound) return;
     startRound(isAiTurn);
-  }, [round.active, lobbySecondsLeft, meId, iStartNextRound, isAiTurn, startRound]);
+  }, [round.active, lobbySecondsLeft, meId, gameOver, iStartNextRound, isAiTurn, startRound]);
 
-  // ---- Scoreboard from broadcast "correct" events --------------------------
+  // ---- Scoreboard from round winners in the current game -------------------
+  // Tallied from round-end winners (not chat "correct") so it shares the same
+  // reset baseline as roundsPlayed — "Play again" clears the board too.
   const scores = useMemo(() => {
     const map = new Map<string, number>();
-    for (const m of chat.messages) {
-      if (m.content.kind === "correct") {
-        const key = m.content.ai ? "🤖 IA" : m.content.name;
+    game.messages.forEach((m, i) => {
+      if (i <= lastResetIdx) return;
+      if (m.content.kind === "round-end" && m.content.winner) {
+        const key = m.content.ai ? "🤖 IA" : m.content.winner;
         map.set(key, (map.get(key) ?? 0) + 1);
       }
-    }
+    });
     return [...map.entries()].sort((a, b) => b[1] - a[1]);
-  }, [chat.messages]);
+  }, [game.messages, lastResetIdx]);
 
   const feed: FeedItem[] = chat.messages.map((m) => ({ id: m.id, content: m.content }));
 
@@ -919,6 +975,15 @@ export default function Game({
     <div className="relative mx-auto flex max-w-7xl flex-col gap-4 p-4 lg:h-screen lg:flex-row">
       <Celebration trigger={myWinId} muted={muted} armed={chatHistoryLoaded} />
       <Notifications toasts={toasts} />
+
+      {gameOver && (
+        <Podium
+          scores={scores}
+          totalRounds={totalRounds}
+          onNewGame={startNewGame}
+          onLeave={onLeave}
+        />
+      )}
 
       {connecting && (
         <div className="absolute inset-0 z-10 grid place-items-center bg-ink">

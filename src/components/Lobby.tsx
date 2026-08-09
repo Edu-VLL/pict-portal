@@ -13,14 +13,17 @@ import {
   reactionsChannel,
 } from "@/lib/types";
 
+const ROUND_OPTIONS = [3, 5, 10];
+
 export default function Lobby({
   onJoin,
 }: {
-  onJoin: (name: string, roomCode: string) => void;
+  onJoin: (name: string, roomCode: string, totalRounds?: number) => void;
 }) {
   const [name, setName] = useState("");
   const [mode, setMode] = useState<"create" | "join">("create");
   const [joinCode, setJoinCode] = useState("");
+  const [rounds, setRounds] = useState(5);
 
   // Generated once per visit (not at submit time) so it can double as the
   // room to prewarm below — reusing the exact code we're about to create.
@@ -59,7 +62,11 @@ export default function Lobby({
   function submit(e: FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
-    onJoin(trimmed, mode === "create" ? createdCode : trimmedCode);
+    onJoin(
+      trimmed,
+      mode === "create" ? createdCode : trimmedCode,
+      mode === "create" ? rounds : undefined,
+    );
   }
 
   return (
@@ -131,6 +138,26 @@ export default function Lobby({
               maxLength={8}
               className="rounded-md border border-edge bg-ink px-3 py-2 uppercase tracking-widest outline-none placeholder:text-fg/30 placeholder:tracking-normal focus:border-accent"
             />
+          )}
+
+          {mode === "create" && (
+            <div>
+              <div className="mb-1 text-xs text-fg/50">Rondas por partida</div>
+              <div className="flex gap-2 rounded-md border border-edge p-1">
+                {ROUND_OPTIONS.map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setRounds(n)}
+                    className={`flex-1 rounded-sm py-1.5 text-sm transition ${
+                      rounds === n ? "bg-accent text-white" : "text-fg/60 hover:text-fg/80"
+                    }`}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
 
           <button
