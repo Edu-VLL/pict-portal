@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -14,7 +15,20 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="min-h-screen antialiased">{children}</body>
+      <body className="min-h-screen antialiased">
+        {/* A plain <script> in a manual <head> gets dropped by the App
+            Router when a `metadata` export is also present — next/script
+            with beforeInteractive is the supported way to run this before
+            first paint, so there's no flash of the wrong theme while React
+            hydrates. Next.js injects it into the real <head> regardless of
+            where it's declared here; declaring it as a direct child of
+            <html> (outside <head>/<body>) is invalid HTML and was causing a
+            hydration mismatch — it belongs inside <body>. */}
+        <Script id="theme-init" strategy="beforeInteractive">
+          {`(function(){try{var s=localStorage.getItem("theme");var t=(s==="light"||s==="dark")?s:(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.setAttribute("data-theme",t);}catch(e){}})();`}
+        </Script>
+        {children}
+      </body>
     </html>
   );
 }

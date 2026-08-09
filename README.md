@@ -66,8 +66,10 @@ Then edit `.env.local`:
 
 - `NEXT_PUBLIC_PORTAL_KEY` = your `pk_...` (safe in the browser)
 - `PORTAL_SECRET` = your `sk_...` (**never commit this**; it's git-ignored)
-- `ANTHROPIC_API_KEY` = a key for the AI guesser (server-side only)
-- `ANTHROPIC_MODEL` = a vision-capable model (default `claude-3-5-sonnet-latest`)
+- `GEMINI_API_KEY` = a Google AI Studio key for the AI guesser (server-side only).
+  Free tier: grab one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+- `GEMINI_MODEL` = *(optional)* a vision-capable Gemini model. Leave it unset to
+  use the default `gemini-flash-lite-latest`
 
 > The game runs **without** the AI key — the realtime drawing/guessing still works,
 > the AI simply sits out. Add the key to enable the AI player.

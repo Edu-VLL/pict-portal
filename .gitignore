@@ -6,7 +6,7 @@ next-env.d.ts
 npm-debug.log*
 .DS_Store
 
-# env — NEVER commit secrets (PORTAL_SECRET, ANTHROPIC_API_KEY)
+# env — NEVER commit secrets (PORTAL_SECRET, GEMINI_API_KEY)
 .env
 .env.local
 .env*.local

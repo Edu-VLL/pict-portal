@@ -11,11 +11,13 @@ export default function Chat({
   disabled,
   placeholder,
   onSend,
+  onTyping,
 }: {
   items: FeedItem[];
   disabled: boolean;
   placeholder: string;
   onSend: (text: string) => void;
+  onTyping?: () => void;
 }) {
   const [text, setText] = useState("");
   const endRef = useRef<HTMLDivElement | null>(null);
@@ -34,7 +36,7 @@ export default function Chat({
 
   return (
     <div className="flex h-full flex-col rounded-xl border border-edge bg-panel">
-      <div className="border-b border-edge px-4 py-3 text-sm font-medium text-white/70">
+      <div className="border-b border-edge px-4 py-3 text-sm font-medium text-fg/70">
         Guesses
       </div>
       <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
@@ -46,10 +48,13 @@ export default function Chat({
       <form onSubmit={submit} className="flex gap-2 border-t border-edge p-3">
         <input
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            if (e.target.value) onTyping?.();
+          }}
           disabled={disabled}
           placeholder={placeholder}
-          className="flex-1 rounded-md border border-edge bg-ink px-3 py-2 text-sm outline-none placeholder:text-white/30 focus:border-accent disabled:opacity-50"
+          className="flex-1 rounded-md border border-edge bg-ink px-3 py-2 text-sm outline-none placeholder:text-fg/30 focus:border-accent disabled:opacity-50"
         />
         <button
           type="submit"
@@ -65,7 +70,7 @@ export default function Chat({
 
 function Line({ msg }: { msg: ChatMsg }) {
   if (msg.kind === "system") {
-    return <p className="text-center text-xs text-white/40">{msg.text}</p>;
+    return <p className="text-center text-xs text-fg/40">{msg.text}</p>;
   }
   if (msg.kind === "correct") {
     return (
@@ -82,11 +87,11 @@ function Line({ msg }: { msg: ChatMsg }) {
       ) : (
         <>
           <PlayerBadge name={msg.name} />
-          <span className="font-semibold text-white/80">{msg.name}</span>
+          <span className="font-semibold text-fg/80">{msg.name}</span>
         </>
       )}
-      <span className="text-white/50">:</span>
-      <span className="text-white/90">{msg.text}</span>
+      <span className="text-fg/50">:</span>
+      <span className="text-fg/90">{msg.text}</span>
     </p>
   );
 }
