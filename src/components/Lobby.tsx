@@ -5,7 +5,13 @@ import PlayerBadge from "./PlayerBadge";
 import ThemeToggle from "./ThemeToggle";
 import { generateRoomCode, normalizeRoomCode } from "@/lib/room";
 import { portal } from "@/lib/portal";
-import { chatChannel, drawChannel, gameChannel } from "@/lib/types";
+import {
+  chatChannel,
+  cursorChannel,
+  drawChannel,
+  gameChannel,
+  reactionsChannel,
+} from "@/lib/types";
 
 export default function Lobby({
   onJoin,
@@ -41,6 +47,8 @@ export default function Lobby({
       portal.channel(gameChannel(pendingRoomCode)),
       portal.channel(chatChannel(pendingRoomCode)),
       portal.channel(drawChannel(pendingRoomCode), { history: "none" }),
+      portal.channel(cursorChannel(pendingRoomCode), { history: "none" }),
+      portal.channel(reactionsChannel(pendingRoomCode), { history: "none" }),
     ];
     for (const c of channels) c.acquire();
     return () => {

@@ -5,7 +5,9 @@ import { useChannel } from "@portalsdk/react";
 import Canvas from "./Canvas";
 import Celebration from "./Celebration";
 import Chat, { FeedItem } from "./Chat";
+import Notifications, { useToasts } from "./Notifications";
 import PlayerBadge from "./PlayerBadge";
+import Reactions from "./Reactions";
 import PlayersPanel, { PlayerRow } from "./PlayersPanel";
 import Scoreboard from "./Scoreboard";
 import Status from "./Status";
@@ -794,6 +796,29 @@ export default function Game({
     return null;
   }, [chat.messages, meId, name]);
 
+  // ---- Avisos in-app --------------------------------------------------------
+  const { toasts, push: pushToast } = useToasts();
+  const notifiedRoundRef = useRef<number | null>(null);
+  const notifiedTurnRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!round.active || round.id === notifiedRoundRef.current) return;
+    notifiedRoundRef.current = round.id;
+    if (isDrawer && !round.aiDrawing) pushToast("✏️ ¡Te toca dibujar!", "turn");
+    else if (round.aiDrawing) pushToast("🤖 La IA está dibujando — ¡a adivinar!");
+    else pushToast(`🎨 Dibuja ${round.drawerName} — ¡a adivinar!`);
+  }, [round.active, round.id, round.aiDrawing, round.drawerName, isDrawer, pushToast]);
+
+  // Aviso anticipado en la sala de espera: saber que sigues tú antes de que
+  // arranque la ronda es lo que evita el "¿ya empezó?".
+  useEffect(() => {
+    if (round.active || !nextTurnId) return;
+    const key = `${nextTurnId}:${roundsPlayed}`;
+    if (key === notifiedTurnRef.current) return;
+    notifiedTurnRef.current = key;
+    if (isMyTurn) pushToast("👉 Eres el siguiente en dibujar", "turn");
+  }, [round.active, nextTurnId, roundsPlayed, isMyTurn, pushToast]);
+
   const [hintPending, setHintPending] = useState(false);
   const [skipPending, setSkipPending] = useState(false);
 
@@ -852,6 +877,7 @@ export default function Game({
   return (
     <div className="relative mx-auto flex max-w-7xl flex-col gap-4 p-4 lg:h-screen lg:flex-row">
       <Celebration trigger={myWinId} muted={muted} armed={chatHistoryLoaded} />
+      <Notifications toasts={toasts} />
 
       {connecting && (
         <div className="absolute inset-0 z-10 grid place-items-center bg-ink">
@@ -990,7 +1016,7 @@ export default function Game({
                       <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-accent/20 text-[10px]">
                         🤖
                       </span>
-                      <span>AI</span>
+                      <span>IA</span>
                     </>
                   ) : nextTurnId ? (
                     <>
@@ -1023,7 +1049,12 @@ export default function Game({
           drawStrokeRef={drawStrokeRef}
           aiDrawing={round.aiDrawing}
           roomCode={roomCode}
+          name={name}
         />
+
+        <div className="flex items-center justify-between gap-3">
+          <Reactions roomCode={roomCode} name={name} />
+        </div>
 
         <Scoreboard scores={scores} />
       </div>

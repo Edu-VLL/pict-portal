@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { useChannel } from "@portalsdk/react";
+import Cursors, { CursorReporter } from "./Cursors";
 import { DrawMsg, StrokePoint, drawChannel } from "@/lib/types";
 
 const W = 900;
@@ -32,9 +33,12 @@ export default function Canvas({
   snapshotRef,
   drawStrokeRef,
   aiDrawing = false,
-  roomCode
+  roomCode,
+  name,
 }: {
   isDrawer: boolean;
+  /** Nombre propio, para etiquetar el cursor que ven los demás. */
+  name: string;
   // Parent stores a function here to grab a PNG data URL of the current canvas.
   snapshotRef?: MutableRefObject<(() => string | null) | null>;
   // Parent stores a function here to paint AND publish a stroke it didn't get
@@ -52,6 +56,7 @@ export default function Canvas({
   const lastSent = useRef<StrokePoint | null>(null);
   const buffer = useRef<StrokePoint[]>([]);
   const lastFlush = useRef(0);
+  const cursorReportRef = useRef<CursorReporter | null>(null);
 
   // Start dark (matches the server-rendered default, avoiding a hydration
   // mismatch) and correct to the real theme once mounted — see the effect
@@ -273,13 +278,22 @@ export default function Canvas({
   }
 
   function onPointerMove(e: ReactPointerEvent<HTMLCanvasElement>) {
-    if (!canDraw || !drawing.current) return;
+    if (!canDraw) return;
     const p = toCanvasPoint(e);
+    // El cursor se reporta aunque no se esté trazando: la gracia es ver el
+    // lápiz moverse y dudar antes de dibujar, no solo mientras pinta.
+    cursorReportRef.current?.({ x: p.x / W, y: p.y / H });
+    if (!drawing.current) return;
     // Paint locally through the last point for a continuous line.
     if (lastSent.current) paintSegment([lastSent.current, p], color, size);
     buffer.current.push(p);
     lastSent.current = p;
     flush();
+  }
+
+  function onPointerLeaveCanvas() {
+    cursorReportRef.current?.(null);
+    endStroke();
   }
 
   function endStroke() {
@@ -306,8 +320,14 @@ export default function Canvas({
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={endStroke}
-          onPointerLeave={endStroke}
-          onPointerCancel={endStroke}
+          onPointerLeave={onPointerLeaveCanvas}
+          onPointerCancel={onPointerLeaveCanvas}
+        />
+        <Cursors
+          roomCode={roomCode}
+          name={name}
+          enabled={canDraw}
+          reportRef={cursorReportRef}
         />
         {(aiDrawing || !isDrawer) && (
           <div className="pointer-events-none absolute right-3 top-3 rounded-full bg-black/50 px-3 py-1 text-xs text-white/70">
