@@ -1,10 +1,10 @@
-// Simple word bank for rounds. Concrete, drawable nouns.
+// Banco de palabras. Sustantivos concretos y fáciles de dibujar.
 export const WORDS = [
-  "cat", "dog", "house", "tree", "car", "sun", "boat", "fish", "star", "apple",
-  "flower", "clock", "book", "key", "cup", "hat", "shoe", "guitar", "rocket",
-  "umbrella", "bicycle", "pizza", "banana", "snake", "ladder", "cloud", "moon",
-  "camera", "glasses", "spider", "crown", "robot", "cactus", "lighthouse",
-  "mountain", "bridge", "envelope", "balloon", "anchor", "mushroom",
+  "gato", "perro", "casa", "árbol", "coche", "sol", "barco", "pez", "estrella",
+  "manzana", "flor", "reloj", "libro", "llave", "taza", "sombrero", "zapato",
+  "guitarra", "cohete", "paraguas", "bicicleta", "pizza", "plátano", "serpiente",
+  "escalera", "nube", "luna", "cámara", "gafas", "araña", "corona", "robot",
+  "cactus", "faro", "montaña", "puente", "sobre", "globo", "ancla", "seta",
 ];
 
 export function randomWord(): string {
@@ -36,11 +36,23 @@ export function revealLetters(word: string, count: number): string {
   return chars.map((c, i) => (c === " " ? " " : shown.has(i) ? c : "_")).join(" ");
 }
 
-// Compare a guess against the target word: case-insensitive, trims
-// surrounding whitespace, but otherwise requires an exact match.
+// Quita tildes y convierte la ñ en n, para comparar respuestas.
+function normalize(s: string): string {
+  return s
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    // Marcas diacríticas: tras NFD, "á" es "a" + U+0301, así que basta con
+    // borrar el rango combinante. Esto también descompone "ñ" en "n" + U+0303.
+    .replace(/[̀-ͯ]/g, "");
+}
+
+// Compara una respuesta con la palabra objetivo. Ignora mayúsculas, espacios
+// sobrantes, tildes y la ñ — mucha gente escribe rápido sin acentos o desde un
+// teclado sin ñ, y rechazar "arana" para "araña" se siente como un bug.
+// Sigue exigiendo la palabra correcta: no tolera erratas ("caza" ≠ "casa").
 export function isCorrect(guess: string, word: string): boolean {
-  const g = guess.trim().toLowerCase();
-  const w = word.trim().toLowerCase();
+  const g = normalize(guess);
   if (!g) return false;
-  return g === w;
+  return g === normalize(word);
 }

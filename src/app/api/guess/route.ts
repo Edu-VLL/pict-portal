@@ -34,10 +34,11 @@ export async function POST(req: NextRequest): Promise<NextResponse<GuessResult>>
   const mediaType = dataUrl.slice(5, dataUrl.indexOf(";")) || "image/png";
 
   const prompt =
-    "We're playing Pictionary. This is an in-progress doodle on a dark canvas. " +
-    "Guess what is being drawn. Reply with STRICT JSON only, no prose, no code fences: " +
-    '{"guess":"<one common noun>","alternatives":["<noun>","<noun>"]}. ' +
-    "Use simple, singular, lowercase everyday nouns. If it's too early to tell, still give your best guess.";
+    "Estamos jugando Pictionary. Este es un garabato en progreso sobre un lienzo. " +
+    "Adivina qué se está dibujando. Responde SOLO con JSON estricto, sin prosa ni bloques de código: " +
+    '{"guess":"<un sustantivo común>","alternatives":["<sustantivo>","<sustantivo>"]}. ' +
+    "Usa sustantivos EN ESPAÑOL, cotidianos, en singular y en minúscula. " +
+    "Si aún es pronto para saberlo, da igualmente tu mejor intento.";
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 6000);

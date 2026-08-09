@@ -77,16 +77,8 @@ export default function Canvas({
     channelId: drawChannel(roomCode),
     history: "none",
     onMessage: (msg) => {
-      console.log("[draw] mensaje recibido", { 
-      senderId: msg.sender?.id, 
-      meId: me?.id, 
-      kind: msg.content.kind
-    })
       // Ignore our own echoes — the drawer already painted locally.
-      if (msg.sender?.id && me?.id && msg.sender.id === me.id) {
-        console.log("[draw] ignorado (es mi propio eco)"); 
-        return;
-      }
+      if (msg.sender?.id && me?.id && msg.sender.id === me.id) return;
       applyRemote(msg.content);
     },
   });
@@ -319,7 +311,7 @@ export default function Canvas({
         />
         {(aiDrawing || !isDrawer) && (
           <div className="pointer-events-none absolute right-3 top-3 rounded-full bg-black/50 px-3 py-1 text-xs text-white/70">
-            {aiDrawing ? "🤖 AI is drawing" : "watching"}
+            {aiDrawing ? "🤖 La IA está dibujando" : "mirando"}
           </div>
         )}
       </div>
@@ -359,7 +351,7 @@ export default function Canvas({
             onClick={onClear}
             className="ml-auto rounded-md border border-edge px-3 py-1.5 text-sm text-fg/80 hover:bg-fg/5"
           >
-            Clear
+            Limpiar
           </button>
         </div>
       )}

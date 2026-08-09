@@ -29,14 +29,14 @@ export async function POST(req: NextRequest): Promise<NextResponse<HintResult>> 
   if (!word) return NextResponse.json({ ok: false, reason: "no_word" }, { status: 400 });
 
   const prompt =
-    `We're playing Pictionary. The secret word is "${word}". ` +
-    `Players are stuck, so give ONE short clue (max 12 words).\n` +
-    `Rules: never write the word itself or any part of it, and don't rhyme it or ` +
-    `spell it out. Describe what it is, where you'd find it, or what it's used for.\n` +
+    `Estamos jugando Pictionary. La palabra secreta es "${word}". ` +
+    `Los jugadores están atascados, así que da UNA pista corta (máximo 12 palabras).\n` +
+    `Reglas: nunca escribas la palabra ni parte de ella, no rimes con ella ni la deletrees. ` +
+    `Describe qué es, dónde se encuentra o para qué sirve.\n` +
     (previous.length
-      ? `Clues already given (say something new): ${previous.join(" | ")}\n`
+      ? `Pistas ya dadas (di algo distinto): ${previous.join(" | ")}\n`
       : "") +
-    `Reply with STRICT JSON only, no prose, no code fences: {"hint":"<your clue>"}`;
+    `Responde SOLO con JSON estricto, sin prosa ni bloques de código, y EN ESPAÑOL: {"hint":"<tu pista>"}`;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 8000);
@@ -70,9 +70,9 @@ export async function POST(req: NextRequest): Promise<NextResponse<HintResult>> 
     const hint = parseHint(text);
     if (!hint) return NextResponse.json({ ok: false, reason: "unparseable" });
 
-    // Never ship a "clue" that contains the answer — the model occasionally
-    // ignores that instruction, and it would end the round instantly.
-    if (hint.toLowerCase().includes(word.toLowerCase())) {
+    // Nunca devolver una "pista" que contenga la respuesta: el modelo a veces
+    // ignora esa instrucción y arruinaría la ronda al instante.
+    if (leaksWord(hint, word)) {
       return NextResponse.json({ ok: false, reason: "leaked_word" });
     }
     return NextResponse.json({ ok: true, hint });
@@ -84,6 +84,23 @@ export async function POST(req: NextRequest): Promise<NextResponse<HintResult>> 
       { status: 502 },
     );
   }
+}
+
+const normalize = (s: string) =>
+  s.trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+
+/**
+ * ¿La pista contiene la respuesta? Compara palabra por palabra y sin tildes,
+ * en vez de con `includes`: sin normalizar se escaparía "arana" para "araña",
+ * y con `includes` una palabra corta como "sol" marcaría como filtración
+ * cualquier pista que dijera "solo".
+ */
+function leaksWord(hint: string, word: string): boolean {
+  const target = normalize(word);
+  const tokens = normalize(hint).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  return tokens.some(
+    (t) => t === target || (target.length >= 4 && t.startsWith(target)),
+  );
 }
 
 function parseHint(text: string): string | null {

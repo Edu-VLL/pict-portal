@@ -37,7 +37,7 @@ export default function Chat({
   return (
     <div className="flex h-full flex-col rounded-xl border border-edge bg-panel">
       <div className="border-b border-edge px-4 py-3 text-sm font-medium text-fg/70">
-        Guesses
+        Respuestas
       </div>
       <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
         {items.map((it) => (
@@ -61,7 +61,7 @@ export default function Chat({
           disabled={disabled}
           className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
         >
-          Guess
+          Enviar
         </button>
       </form>
     </div>
@@ -76,14 +76,14 @@ function Line({ msg }: { msg: ChatMsg }) {
     return (
       <p className="flex items-center gap-1.5 text-sm font-semibold text-green-400">
         {msg.ai ? "🤖" : <PlayerBadge name={msg.name} />}
-        {msg.name} guessed it — “{msg.word}”
+        {msg.ai ? "La IA" : msg.name} acertó — «{msg.word}»
       </p>
     );
   }
   return (
     <p className="flex items-start gap-1.5 text-sm">
       {msg.ai ? (
-        <span className="font-semibold text-accent">🤖 AI</span>
+        <span className="font-semibold text-accent">🤖 IA</span>
       ) : (
         <>
           <PlayerBadge name={msg.name} />
