@@ -55,8 +55,22 @@ export default function Lobby({
   }
 
   return (
-    <div className="grid min-h-screen place-items-center p-6">
-      <div className="w-full max-w-sm rounded-2xl border border-edge bg-panel p-8">
+    <div className="relative grid min-h-screen place-items-center overflow-hidden p-6">
+      {/* Decorative background — purely visual, never intercepts clicks */}
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute -left-32 -top-32 h-80 w-80 rounded-full bg-accent/20 blur-3xl" />
+        <div className="absolute -bottom-40 -right-20 h-96 w-96 rounded-full bg-accent/10 blur-3xl" />
+        <div
+          className="absolute inset-0 opacity-[0.15]"
+          style={{
+            backgroundImage: "radial-gradient(currentColor 1px, transparent 1px)",
+            backgroundSize: "24px 24px",
+            color: "var(--edge, #666)",
+          }}
+        />
+      </div>
+
+      <div className="relative w-full max-w-sm rounded-2xl border border-edge bg-panel p-8 shadow-xl">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-semibold">
             Pict<span className="text-accent">-Portal</span>
