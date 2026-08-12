@@ -14,15 +14,16 @@ import Scoreboard from "./Scoreboard";
 import Status from "./Status";
 import ThemeToggle from "./ThemeToggle";
 import {
+  AiDifficulty,
   ChatMsg,
   GameMsg,
   chatChannel,
   gameChannel,
 } from "@/lib/types";
-import { isCorrect, maskWord, randomWord, revealLetters } from "@/lib/words";
+import { isCorrect, maskWord, pickWord, revealLetters } from "@/lib/words";
+import { playRoundStart, playVictory } from "@/lib/sound";
 
 const ROUND_MS = 90_000;
-const GUESS_EVERY_MS = 5_000;
 // Canvas coordinate space the AI's normalized 0..1 strokes are scaled into —
 // must match Canvas.tsx's fixed W/H backing store.
 const CANVAS_W = 900;
@@ -34,6 +35,19 @@ const AI_CHUNK = 2; // points per publish, keeps the line visibly advancing
 const AI_STROKE_MS = 90; // pace between chunks
 const AI_PAUSE_MS = 260; // pen lift between strokes
 const LOBBY_WAIT_MS = 30_000; // waiting room countdown before each round begins
+// How often the AI tries to guess while someone else draws, per difficulty.
+// "hard" still stays comfortably above the server's 2.5s rate-limit floor
+// (see /api/guess) so a tougher bot never trips it under normal play.
+const GUESS_INTERVAL_MS: Record<AiDifficulty, number> = {
+  easy: 9_000,
+  normal: 5_000,
+  hard: 3_000,
+};
+const DIFFICULTY_LABEL: Record<AiDifficulty, string> = {
+  easy: "fácil",
+  normal: "normal",
+  hard: "difícil",
+};
 
 type Round = {
   active: boolean;
@@ -59,11 +73,15 @@ export default function Game({
   name,
   roomCode,
   totalRounds: totalRoundsProp,
+  aiDifficulty: aiDifficultyProp,
+  customWords: customWordsProp,
   onLeave,
 }: {
   name: string;
   roomCode: string;
   totalRounds?: number;
+  aiDifficulty?: AiDifficulty;
+  customWords?: string[];
   onLeave: () => void;
 }) {
   // ---- Channels -------------------------------------------------------------
@@ -73,6 +91,13 @@ export default function Game({
   // permanently blocks the same (session-stable, anonymous) id from
   // reappearing if they rejoin.
   const [justLeftIds, setJustLeftIds] = useState<Set<string>>(() => new Set());
+  // Set the instant our own player-left in a "kick" arrives — a separate
+  // effect further down (once pushToast/onLeave are in scope) reacts to it.
+  const [kicked, setKicked] = useState(false);
+  // Mirrors `meId` (declared below, after this channel) so this same-render
+  // onMessage closure can compare against a value that isn't in scope yet at
+  // the point it's written syntactically — see the other *Ref mirrors below.
+  const meIdRef = useRef<string | undefined>(undefined);
 
   const game = useChannel<GameMsg>({
     channelId: gameChannel(roomCode),
@@ -81,6 +106,10 @@ export default function Game({
       if (m.content.kind === "round-request") {
         // Only the client holding the word can answer these.
         roundRequestRef.current?.(m.content.what);
+        return;
+      }
+      if (m.content.kind === "kick") {
+        if (m.content.playerId === meIdRef.current) setKicked(true);
         return;
       }
       if (m.content.kind !== "player-left") return;
@@ -124,6 +153,30 @@ export default function Game({
     return n;
   }, [game.messages]);
   const totalRounds = configuredRounds || totalRoundsProp || 0;
+
+  // Same idea as totalRounds: the creator's broadcast wins for everyone
+  // (including late joiners, via history); "normal" if nobody ever set one.
+  const configuredDifficulty = useMemo(() => {
+    let d: AiDifficulty | undefined;
+    for (const m of game.messages) {
+      if (m.content.kind === "game-config" && m.content.aiDifficulty) d = m.content.aiDifficulty;
+    }
+    return d;
+  }, [game.messages]);
+  const aiDifficulty: AiDifficulty = configuredDifficulty ?? aiDifficultyProp ?? "normal";
+
+  // Same broadcast, same "creator's value wins for everyone" rule — an empty
+  // list means the room uses the default word bank (see pickWord).
+  const configuredCustomWords = useMemo(() => {
+    let words: string[] | undefined;
+    for (const m of game.messages) {
+      if (m.content.kind === "game-config" && m.content.customWords?.length) {
+        words = m.content.customWords;
+      }
+    }
+    return words;
+  }, [game.messages]);
+  const customWords = configuredCustomWords ?? customWordsProp;
 
   // Latest ai-toggle wins; the AI plays by default until someone benches it.
   const aiEnabled = useMemo(() => {
@@ -245,6 +298,10 @@ export default function Game({
     isDrawerRef.current = isDrawer;
   }, [isDrawer]);
 
+  useEffect(() => {
+    meIdRef.current = meId;
+  }, [meId]);
+
   // Tell everyone our current name — on first join, and again if it ever
   // changes (e.g. Leave then rejoin under a new name in the same tab).
   useEffect(() => {
@@ -262,8 +319,15 @@ export default function Game({
       return;
     }
     sentConfigRef.current = true;
-    void game.send({ content: { kind: "game-config", totalRounds: totalRoundsProp } });
-  }, [meId, totalRoundsProp, configuredRounds, game.send]);
+    void game.send({
+      content: {
+        kind: "game-config",
+        totalRounds: totalRoundsProp,
+        ...(aiDifficultyProp ? { aiDifficulty: aiDifficultyProp } : {}),
+        ...(customWordsProp?.length ? { customWords: customWordsProp } : {}),
+      },
+    });
+  }, [meId, totalRoundsProp, aiDifficultyProp, customWordsProp, configuredRounds, game.send]);
 
   // ---- Liveness heartbeat ----------------------------------------------------
   // Portal's own `presence` reflects the socket's state server-side, which can
@@ -301,6 +365,25 @@ export default function Game({
   // the AI plays) and hosts the AI's turns.
   const leaderId = roster[0];
   const isLeader = !!meId && leaderId === meId;
+
+  // The room's actual creator — whoever sent the one-time game-config
+  // broadcast (only the client that came from Lobby's "create" flow ever
+  // does, see the sentConfigRef effect below) — as opposed to `leaderId`,
+  // which is deliberately just "whoever currently sorts first" and can jump
+  // to a brand new joiner the instant they connect. That's fine for
+  // `leaderId`'s job (AI hosting/watchdogs need *someone* reliably present,
+  // not a specific person), but it's the wrong thing to gate a real
+  // privilege like kicking on — a newcomer could otherwise outrank and
+  // remove the person who made the room. Sticky to the original creator:
+  // doesn't transfer if they leave, so a room can go host-less rather than
+  // handing kick power to whoever happens to be around.
+  const creatorId = useMemo(() => {
+    for (const m of game.messages) {
+      if (m.content.kind === "game-config") return m.sender.id;
+    }
+    return undefined;
+  }, [game.messages]);
+  const isCreator = !!meId && creatorId === meId;
 
   // Turn order: everyone present, plus the AI as its own participant when it's
   // in the game — it takes a turn like any other player rather than borrowing
@@ -349,6 +432,7 @@ export default function Game({
       name: id === meId ? name : namesById.get(id) ?? "player",
       isMe: id === meId,
       isLeader: id === leaderId,
+      isCreator: id === creatorId,
       // On an AI turn the drawerId is just the human hosting it — the pencil
       // belongs on the bot's row, not theirs.
       isDrawer: round.active && !round.aiDrawing && id === round.drawerId,
@@ -360,6 +444,7 @@ export default function Game({
     name,
     namesById,
     leaderId,
+    creatorId,
     round.active,
     round.aiDrawing,
     round.drawerId,
@@ -377,7 +462,7 @@ export default function Game({
       const now = Date.now();
       if (now - lastStartRef.current < 2000) return;
       lastStartRef.current = now;
-      const word = randomWord();
+      const word = pickWord(customWords);
       wordRef.current = word;
       endedRef.current = false;
       hintsRef.current = [];
@@ -395,7 +480,7 @@ export default function Game({
         },
       });
     },
-    [game.send, meId, name, round.active],
+    [game.send, meId, name, round.active, customWords],
   );
 
   // Swap in a fresh word for the *same* turn. Publishing a new round-start
@@ -405,7 +490,7 @@ export default function Game({
   const reRollWord = useCallback(
     (aiDrawing: boolean) => {
       if (!meId) return;
-      const word = randomWord();
+      const word = pickWord(customWords);
       wordRef.current = word;
       endedRef.current = false;
       hintsRef.current = [];
@@ -422,7 +507,7 @@ export default function Game({
         },
       });
     },
-    [game.send, meId, name],
+    [game.send, meId, name, customWords],
   );
 
 
@@ -595,6 +680,18 @@ export default function Game({
     });
   }
 
+  // Creator-only — see the `creatorId` comment above for why this is *not*
+  // `isLeader`. The target client removes itself on receipt (see the
+  // `kicked` effect below) — there's no way to force another browser
+  // offline, only to tell it to leave and have everyone else agree it's gone.
+  function kickPlayer(id: string, playerName: string) {
+    if (!isCreator) return;
+    void game.send({ content: { kind: "kick", playerId: id } });
+    void chat.send({
+      content: { kind: "system", text: `👢 ${playerName} fue expulsado de la sala.` },
+    });
+  }
+
   // A deliberate "Leave" click is a controlled moment, unlike a crash/dropped
   // connection: we can announce it explicitly instead of leaving everyone
   // else to *infer* we're gone, which is bounded by Portal's ~5s
@@ -693,13 +790,17 @@ export default function Game({
         const res = await fetch("/api/guess", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ image: snap }),
+          body: JSON.stringify({ image: snap, roomCode }),
         });
         const data = (await res.json()) as {
           ok: boolean;
           guess?: string;
           alternatives?: string[];
+          skip?: boolean;
         };
+        // A 429 skip just means the server-side rate limit already covered
+        // this tick (e.g. another room's burst, or a request still in
+        // flight) — nothing to guess on, try again next interval.
         if (!data.ok || !data.guess || stopped || endedRef.current) return;
         // Check for the win first, then decide whether the guess is worth
         // posting: a repeat of the previous tick's guess is just noise in the
@@ -719,7 +820,7 @@ export default function Game({
       } catch {
         /* transient — try again next tick */
       }
-    }, GUESS_EVERY_MS);
+    }, GUESS_INTERVAL_MS[aiDifficulty]);
 
     return () => {
       stopped = true;
@@ -730,7 +831,7 @@ export default function Game({
     // interval on every render — and since the countdown re-renders this
     // component every 500ms, a 5s interval would never survive long enough
     // to fire even once. That's why the AI never guessed.
-  }, [isDrawer, round.active, round.id, aiEnabled]);
+  }, [isDrawer, round.active, round.id, aiEnabled, aiDifficulty]);
 
   // ---- Countdown + auto end -------------------------------------------------
   const [now, setNow] = useState(Date.now());
@@ -898,6 +999,18 @@ export default function Game({
   const notifiedRoundRef = useRef<number | null>(null);
   const notifiedTurnRef = useRef<string | null>(null);
 
+  // Getting kicked plays out like a deliberate Leave: announce it (so our
+  // roster row drops immediately for everyone else instead of waiting out
+  // the activity heartbeat) and give the toast a beat to actually be seen
+  // before handing back to the lobby.
+  useEffect(() => {
+    if (!kicked) return;
+    pushToast("🚪 Te expulsaron de la sala.", "turn");
+    if (meId) void game.send({ content: { kind: "player-left", playerId: meId } });
+    const t = setTimeout(() => onLeave(), 1500);
+    return () => clearTimeout(t);
+  }, [kicked, meId, game.send, pushToast, onLeave]);
+
   useEffect(() => {
     if (!round.active || round.id === notifiedRoundRef.current) return;
     notifiedRoundRef.current = round.id;
@@ -946,6 +1059,39 @@ export default function Game({
       return next;
     });
   }
+
+  // ---- Round-start / victory sounds ------------------------------------
+  // Both effects use the same "prime on the first history-loaded
+  // observation, only fire on a later transition" pattern as Celebration's
+  // confetti trigger — otherwise a late joiner would get a sound blast the
+  // instant their history backfill (an already-active round, or an
+  // already-finished game) loads in.
+  const roundSoundPrimedRef = useRef(false);
+  const roundSoundSeenRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!chatHistoryLoaded) return;
+    if (!roundSoundPrimedRef.current) {
+      roundSoundPrimedRef.current = true;
+      roundSoundSeenRef.current = round.id;
+      return;
+    }
+    if (!round.active || round.id === roundSoundSeenRef.current) return;
+    roundSoundSeenRef.current = round.id;
+    if (!muted) playRoundStart();
+  }, [round.active, round.id, chatHistoryLoaded, muted]);
+
+  const victorySoundPrimedRef = useRef(false);
+  const prevGameOverRef = useRef(false);
+  useEffect(() => {
+    if (!chatHistoryLoaded) return;
+    if (!victorySoundPrimedRef.current) {
+      victorySoundPrimedRef.current = true;
+      prevGameOverRef.current = gameOver;
+      return;
+    }
+    if (gameOver && !prevGameOverRef.current && !muted) playVictory();
+    prevGameOverRef.current = gameOver;
+  }, [gameOver, chatHistoryLoaded, muted]);
 
   const snapshotRef = useRef<(() => string | null) | null>(null);
 
@@ -1005,6 +1151,8 @@ export default function Game({
         aiDrawing={round.active && round.aiDrawing}
         canToggleAi={isLeader}
         onToggleAi={toggleAi}
+        canKick={isCreator}
+        onKick={kickPlayer}
       />
 
       {/* Center: canvas + status */}
@@ -1029,6 +1177,14 @@ export default function Game({
             {totalRounds > 0 && (
               <span className="rounded-md border border-edge px-2 py-0.5 text-xs font-medium text-fg/70">
                 Ronda {Math.min(roundsPlayed + 1, totalRounds)}/{totalRounds}
+              </span>
+            )}
+            {aiEnabled && (
+              <span
+                title="Qué tan seguido intenta adivinar la IA"
+                className="rounded-md border border-edge px-2 py-0.5 text-xs font-medium text-fg/70"
+              >
+                🤖 {DIFFICULTY_LABEL[aiDifficulty]}
               </span>
             )}
             <Status status={game.status} />
