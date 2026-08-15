@@ -107,7 +107,10 @@ export default function Game({
 
   const game = useChannel<GameMsg>({
     channelId: gameChannel(roomCode),
-    metadata: { name },
+    // No `metadata` here on purpose: Lobby pre-warms this channel (with no
+    // options) while the player types, so Portal keeps those first options and
+    // would warn that a second creation's `metadata` is ignored. We don't rely
+    // on presence metadata anyway — names propagate via `name-update`.
     onMessage: (m) => {
       if (m.content.kind === "round-request") {
         // Only the client holding the word can answer these.
@@ -218,7 +221,9 @@ export default function Game({
 
   const chat = useChannel<ChatMsg>({
     channelId: chatChannel(roomCode),
-    metadata: { name },
+    // Same as the game channel above — Lobby pre-warms it first without
+    // options, so a `metadata` here would only trigger the "already created
+    // with different options" warning and be ignored.
     onMessage: (m) => {
       // The drawer is the authority that validates human guesses.
       if (!isDrawerRef.current || endedRef.current) return;
