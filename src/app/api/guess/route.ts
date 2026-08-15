@@ -8,7 +8,43 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
-type GuessResult = { ok: boolean; guess?: string; alternatives?: string[]; reason?: string };
+type GuessResult = {
+  ok: boolean;
+  guess?: string;
+  alternatives?: string[];
+  reason?: string;
+  // Server said no before even touching Gemini — the caller should back off
+  // instead of treating this as a transient failure worth logging.
+  skip?: boolean;
+};
+
+// Last accepted request per room, so a burst of clients (or a tight local
+// loop) can't multiply into one Gemini call per tick per room. Module-level
+// state is fine here: this route runs in a single long-lived Node process
+// (not a per-request isolate), so the map survives across requests — it just
+// won't be shared across multiple server instances behind a load balancer,
+// which is an acceptable gap for this project's scale.
+const RATE_LIMIT_MS = 2500;
+const lastRequestAt = new Map<string, number>();
+// Rooms are short-lived; without this the map would grow forever across a
+// long-running server process as new room codes keep showing up.
+const MAX_TRACKED_ROOMS = 500;
+
+function rateLimited(roomCode: string): boolean {
+  const now = Date.now();
+  const last = lastRequestAt.get(roomCode);
+  if (last !== undefined && now - last < RATE_LIMIT_MS) return true;
+  // Delete-then-set so an existing key moves to the end (Map iteration
+  // order follows last insertion, not last update) — keeps eviction below
+  // roughly least-recently-used instead of evicting by first-ever request.
+  lastRequestAt.delete(roomCode);
+  if (lastRequestAt.size >= MAX_TRACKED_ROOMS) {
+    const oldest = lastRequestAt.keys().next().value;
+    if (oldest !== undefined) lastRequestAt.delete(oldest);
+  }
+  lastRequestAt.set(roomCode, now);
+  return false;
+}
 
 export async function POST(req: NextRequest): Promise<NextResponse<GuessResult>> {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -20,14 +56,26 @@ export async function POST(req: NextRequest): Promise<NextResponse<GuessResult>>
   }
 
   let dataUrl: string | undefined;
+  let roomCode: string | undefined;
   try {
-    const body = (await req.json()) as { image?: string };
+    const body = (await req.json()) as { image?: string; roomCode?: string };
     dataUrl = body.image;
+    roomCode = typeof body.roomCode === "string" ? body.roomCode.trim() : undefined;
   } catch {
     return NextResponse.json({ ok: false, reason: "bad_request" }, { status: 400 });
   }
   if (!dataUrl?.startsWith("data:image/")) {
     return NextResponse.json({ ok: false, reason: "bad_image" }, { status: 400 });
+  }
+  if (!roomCode) {
+    return NextResponse.json({ ok: false, reason: "no_room" }, { status: 400 });
+  }
+
+  // Last line of defense against runaway call volume (bumped polling
+  // frequency, multiple active rooms, a client bug): reject over the cap
+  // before it ever reaches Gemini, instead of just hoping the client behaves.
+  if (rateLimited(roomCode)) {
+    return NextResponse.json({ ok: false, skip: true, reason: "rate_limited" }, { status: 429 });
   }
 
   const base64 = dataUrl.split(",", 2)[1] ?? "";
