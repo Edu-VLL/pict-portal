@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, use, useEffect, useState } from "react";
 import Image from "next/image";
 import PlayerBadge from "./PlayerBadge";
 import ThemeToggle from "./ThemeToggle";
@@ -15,6 +15,7 @@ import {
   gameChannel,
   reactionsChannel,
 } from "@/lib/types";
+import { error } from "console";
 
 const ROUND_OPTIONS = [3, 5, 10];
 const DIFFICULTY_OPTIONS: { value: AiDifficulty; label: string }[] = [
@@ -40,6 +41,8 @@ export default function Lobby({
   const [rounds, setRounds] = useState(5);
   const [difficulty, setDifficulty] = useState<AiDifficulty>("normal");
   const [customWordsText, setCustomWordsText] = useState("");
+  const [generating, setGenerating] = useState(false)
+  const [generateError, setGenerateError] = useState<string | null>(null)
   const customWordCount = parseCustomWords(customWordsText).length;
 
   // Generated once per visit (not at submit time) so it can double as the
@@ -75,6 +78,38 @@ export default function Lobby({
       for (const c of channels) c.release();
     };
   }, [pendingRoomCode]);
+
+  async function generateWordsWithIA() {
+    const topic = customWordsText.trim();
+    if (!topic || generating) return;
+
+    setGenerating(true);
+    setGenerateError(null);
+
+    try {
+
+      const res = await fetch('/api/generate-words', {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({topic}),
+      });
+
+      if(!res.ok) throw new Error("La IA no pudo generar palabras :(")
+
+      const data: { words: string[]} = await res.json()
+      if(!Array.isArray(data.words) || data.words.length === 0) {
+        throw new Error("Respuesta vacía de la IA.");
+      }
+
+      setCustomWordsText(data.words.join(", "))
+
+    } catch(err) {
+      setGenerateError(err instanceof Error ? err.message : "Error inesperado.")
+    } finally {
+      setGenerating(false)
+    }
+  }
+
 
   function submit(e: FormEvent) {
     e.preventDefault();
@@ -222,21 +257,35 @@ export default function Lobby({
 
             {mode === "create" ? (
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-fg/80">
-                  Palabras personalizadas <span className="font-normal text-fg/40">(opcional)</span>
-                </label>
+                <div className="mb-1.5 flex items-center justify-between">
+                  <label className="block text-sm font-medium text-fg/80">
+                    Categoría personalizada <span className="font-normal text-fg/40">(opcional)</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={generateWordsWithIA}
+                    disabled={!customWordsText.trim() || generating}
+                    className="inline-flex items-center gap-1 rounded-full border border-edge px-2.5 py-1 text-xs font-semibold text-fg/70 transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {generating ? "Generando…" : <>✦ Generar con IA</>}
+                  </button>
+                </div>
                 <textarea
                   value={customWordsText}
                   onChange={(e) => setCustomWordsText(e.target.value)}
-                  placeholder="gato, casa, cohete…"
+                  placeholder="Hogar, Cine, Deporte…"
                   rows={2}
                   className="w-full resize-none rounded-xl border border-edge bg-ink px-3 py-2.5 text-sm outline-none placeholder:text-fg/30 focus:border-accent"
                 />
-                <p className="mt-1 text-xs text-fg/40">
-                  {customWordCount > 0
-                    ? `${customWordCount} palabra${customWordCount === 1 ? "" : "s"} — reemplazan el banco por defecto.`
-                    : "Separadas por coma o salto de línea. Si lo dejas vacío, se usa el banco por defecto."}
-                </p>
+                {generateError ? (
+                  <p className="mt-1 text-xs text-red-400">{generateError}</p>
+                ) : (
+                  <p className="mt-1 text-xs text-fg/40">
+                    {customWordCount > 0
+                      ? `${customWordCount} palabra${customWordCount === 1 ? "" : "s"} — reemplazan el banco por defecto.`
+                      : "Escribe un tema y pulsa 'Generar con IA', o escribe tus propias palabras separadas por coma o salto de línea."}
+                  </p>
+                )}
               </div>
             ) : (
               <div>
