@@ -48,6 +48,12 @@ const DIFFICULTY_LABEL: Record<AiDifficulty, string> = {
   normal: "normal",
   hard: "difícil",
 };
+// Scoring: a correct guess is worth a base amount plus a speed bonus scaled by
+// how much of the round's time was still left, and a streak bonus for
+// back-to-back wins by the same player.
+const BASE_POINTS = 50;
+const SPEED_MAX = 50;
+const STREAK_BONUS = 25;
 
 type Round = {
   active: boolean;
@@ -101,7 +107,10 @@ export default function Game({
 
   const game = useChannel<GameMsg>({
     channelId: gameChannel(roomCode),
-    metadata: { name },
+    // No `metadata` here on purpose: Lobby pre-warms this channel (with no
+    // options) while the player types, so Portal keeps those first options and
+    // would warn that a second creation's `metadata` is ignored. We don't rely
+    // on presence metadata anyway — names propagate via `name-update`.
     onMessage: (m) => {
       if (m.content.kind === "round-request") {
         // Only the client holding the word can answer these.
@@ -199,6 +208,9 @@ export default function Game({
   const lastHintAtRef = useRef(0);
   const hintsExhaustedSaidRef = useRef(false);
   const isDrawerRef = useRef(false);
+  // Current round's end time, so endRound (kept stable, not re-created per
+  // render) can read how much time was left to award speed points.
+  const roundEndsAtRef = useRef(0);
   const nameRef = useRef(name);
   const sendChatRef = useRef<((m: ChatMsg) => void) | null>(null);
   const endRoundRef = useRef<((winner?: string, ai?: boolean) => void) | null>(null);
@@ -209,7 +221,9 @@ export default function Game({
 
   const chat = useChannel<ChatMsg>({
     channelId: chatChannel(roomCode),
-    metadata: { name },
+    // Same as the game channel above — Lobby pre-warms it first without
+    // options, so a `metadata` here would only trigger the "already created
+    // with different options" warning and be ignored.
     onMessage: (m) => {
       // The drawer is the authority that validates human guesses.
       if (!isDrawerRef.current || endedRef.current) return;
@@ -297,6 +311,10 @@ export default function Game({
   useEffect(() => {
     isDrawerRef.current = isDrawer;
   }, [isDrawer]);
+
+  useEffect(() => {
+    roundEndsAtRef.current = round.active ? round.endsAt : 0;
+  }, [round.active, round.endsAt]);
 
   useEffect(() => {
     meIdRef.current = meId;
@@ -517,7 +535,27 @@ export default function Game({
       endedRef.current = true;
       const word = wordRef.current ?? "?";
       wordRef.current = null;
-      void game.send({ content: { kind: "round-end", word, winner, ai } });
+      // Speed-based points: the more of the round's clock was left when the
+      // guess landed, the bigger the bonus. Only awarded when there's a winner.
+      let points: number | undefined;
+      if (winner) {
+        const endsAt = roundEndsAtRef.current;
+        const secLeft = endsAt ? Math.max(0, (endsAt - Date.now()) / 1000) : 0;
+        const frac = Math.min(1, secLeft / (ROUND_MS / 1000));
+        points = BASE_POINTS + Math.round(SPEED_MAX * frac);
+      }
+      // Share the round's drawing for the end-of-game gallery — only the client
+      // that actually held the pen (or hosted the AI) has it on canvas, and
+      // only if something was drawn.
+      if (isDrawerRef.current) {
+        const art = snapshotRef.current?.();
+        if (art) {
+          void game.send({ content: { kind: "round-art", image: art, word, winner, ai } });
+        }
+      }
+      void game.send({
+        content: { kind: "round-end", word, winner, ai, ...(points != null ? { points } : {}) },
+      });
     },
     // game.send, not game: useChannel returns a fresh object every render, so
     // depending on the whole thing would make endRound unstable — and any
@@ -781,16 +819,50 @@ export default function Game({
     endedRef.current = false;
     let stopped = false;
     let lastGuess = ""; // per-round, so a new round can repeat an old guess
+    let lastSnap: string | null = null; // to tell whether the drawing changed
+    // Base cadence comes from the room's difficulty; the loop then adapts
+    // around it — guessing at the base rate while the sketch is changing and
+    // easing off toward `maxDelay` when it holds still.
+    const base = GUESS_INTERVAL_MS[aiDifficulty];
+    const maxDelay = Math.min(base * 2, 12_000);
+    let delay = base;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    // The request currently in flight. Self-scheduling ticks already prevent
+    // pile-ups (the next tick is only queued once this one settles), but we
+    // still abort any straggler on teardown so a slow request from a finished
+    // round can't resolve into the next one — and abort before firing a new
+    // one as a belt-and-suspenders guard.
+    let controller: AbortController | null = null;
 
-    const timer = setInterval(async () => {
+    const schedule = () => {
+      if (stopped) return;
+      timer = setTimeout(tick, delay);
+    };
+
+    const tick = async () => {
       if (stopped || endedRef.current) return;
       const snap = snapshotRef.current?.();
-      if (!snap) return;
+      // Nothing on the board yet — wait the max interval and re-check.
+      if (!snap) {
+        delay = maxDelay;
+        schedule();
+        return;
+      }
+      // Guess at the base rate while the sketch is actively changing; ease off
+      // (grow the delay toward the ceiling) when it's holding still.
+      const changed = snap !== lastSnap;
+      lastSnap = snap;
+      delay = changed ? base : Math.min(maxDelay, Math.round(delay * 1.5));
+
+      controller?.abort();
+      const ac = new AbortController();
+      controller = ac;
       try {
         const res = await fetch("/api/guess", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ image: snap, roomCode }),
+          signal: ac.signal,
         });
         const data = (await res.json()) as {
           ok: boolean;
@@ -801,36 +873,42 @@ export default function Game({
         // A 429 skip just means the server-side rate limit already covered
         // this tick (e.g. another room's burst, or a request still in
         // flight) — nothing to guess on, try again next interval.
-        if (!data.ok || !data.guess || stopped || endedRef.current) return;
-        // Check for the win first, then decide whether the guess is worth
-        // posting: a repeat of the previous tick's guess is just noise in the
-        // chat (the model says "night" over and over at a sparse drawing),
-        // but it still counts if it happens to be right.
-        const word = wordRef.current;
-        const won =
-          !!word && [data.guess, ...(data.alternatives ?? [])].some((c) => isCorrect(c, word));
-        if (data.guess !== lastGuess || won) {
-          lastGuess = data.guess;
-          sendChatRef.current?.({ kind: "guess", name: "IA", text: data.guess, ai: true });
-        }
-        if (won && word) {
-          sendChatRef.current?.({ kind: "correct", name: "IA", word, ai: true });
-          endRoundRef.current?.("IA", true);
+        if (data.ok && data.guess && !stopped && !endedRef.current) {
+          // Check for the win first, then decide whether the guess is worth
+          // posting: a repeat of the previous tick's guess is just noise in the
+          // chat (the model says "night" over and over at a sparse drawing),
+          // but it still counts if it happens to be right.
+          const word = wordRef.current;
+          const won =
+            !!word && [data.guess, ...(data.alternatives ?? [])].some((c) => isCorrect(c, word));
+          if (data.guess !== lastGuess || won) {
+            lastGuess = data.guess;
+            sendChatRef.current?.({ kind: "guess", name: "IA", text: data.guess, ai: true });
+          }
+          if (won && word) {
+            sendChatRef.current?.({ kind: "correct", name: "IA", word, ai: true });
+            endRoundRef.current?.("IA", true);
+          }
         }
       } catch {
-        /* transient — try again next tick */
+        /* aborted (expected on teardown) or transient — try again next tick */
+      } finally {
+        if (controller === ac) controller = null;
+        schedule();
       }
-    }, GUESS_INTERVAL_MS[aiDifficulty]);
+    };
+
+    schedule();
 
     return () => {
       stopped = true;
-      clearInterval(timer);
+      if (timer) clearTimeout(timer);
+      controller?.abort();
     };
     // Deliberately NOT depending on endRound (reached via endRoundRef above):
     // anything that changes identity per render would clear and restart this
-    // interval on every render — and since the countdown re-renders this
-    // component every 500ms, a 5s interval would never survive long enough
-    // to fire even once. That's why the AI never guessed.
+    // loop on every render — and since the countdown re-renders this component
+    // every 500ms, the interval would never survive long enough to fire.
   }, [isDrawer, round.active, round.id, aiEnabled, aiDifficulty]);
 
   // ---- Countdown + auto end -------------------------------------------------
@@ -960,14 +1038,39 @@ export default function Game({
   // reset baseline as roundsPlayed — "Play again" clears the board too.
   const scores = useMemo(() => {
     const map = new Map<string, number>();
+    // Track back-to-back wins to reward streaks. A round that ends with no
+    // winner (timeout / abandon) breaks the streak.
+    let lastWinner: string | null = null;
+    let streak = 0;
     game.messages.forEach((m, i) => {
-      if (i <= lastResetIdx) return;
-      if (m.content.kind === "round-end" && m.content.winner) {
-        const key = m.content.ai ? "🤖 IA" : m.content.winner;
-        map.set(key, (map.get(key) ?? 0) + 1);
+      if (i <= lastResetIdx || m.content.kind !== "round-end") return;
+      const c = m.content;
+      if (!c.winner) {
+        lastWinner = null;
+        streak = 0;
+        return;
       }
+      const key = c.ai ? "🤖 IA" : c.winner;
+      // `points` is speed-based; fall back to 1 for rounds recorded before the
+      // scoring change so old games still tally sensibly.
+      const pts = c.points ?? 1;
+      streak = key === lastWinner ? streak + 1 : 0;
+      lastWinner = key;
+      const bonus = streak * STREAK_BONUS;
+      map.set(key, (map.get(key) ?? 0) + pts + bonus);
     });
     return [...map.entries()].sort((a, b) => b[1] - a[1]);
+  }, [game.messages, lastResetIdx]);
+
+  // Drawings from finished rounds in the current game, for the podium gallery.
+  const gallery = useMemo(() => {
+    const items: { image: string; word: string; winner?: string; ai?: boolean }[] = [];
+    game.messages.forEach((m, i) => {
+      if (i <= lastResetIdx || m.content.kind !== "round-art") return;
+      const c = m.content;
+      items.push({ image: c.image, word: c.word, winner: c.winner, ai: c.ai });
+    });
+    return items;
   }, [game.messages, lastResetIdx]);
 
   const feed: FeedItem[] = chat.messages.map((m) => ({ id: m.id, content: m.content }));
@@ -1126,6 +1229,7 @@ export default function Game({
         <Podium
           scores={scores}
           totalRounds={totalRounds}
+          gallery={gallery}
           onNewGame={startNewGame}
           onLeave={onLeave}
         />

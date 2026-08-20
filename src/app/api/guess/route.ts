@@ -7,6 +7,10 @@ import { NextRequest, NextResponse } from "next/server";
 // Uses Google Gemini (free tier). Get a key at https://aistudio.google.com/apikey
 
 export const runtime = "nodejs";
+// Gemini vision calls routinely take 3–6s and occasionally longer; give the
+// serverless function enough head-room so a slow (but valid) guess isn't
+// killed by the platform before our own timeout below can decide.
+export const maxDuration = 15;
 
 type GuessResult = {
   ok: boolean;
@@ -89,7 +93,10 @@ export async function POST(req: NextRequest): Promise<NextResponse<GuessResult>>
     "Si aún es pronto para saberlo, da igualmente tu mejor intento.";
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 6000);
+  // 6s was too tight: successful guesses regularly land at 4–5.5s, so the tail
+  // past 6s (still valid, just slow) was being aborted into a 502. 10s captures
+  // that tail while staying under the function's maxDuration budget.
+  const timeoutId = setTimeout(() => controller.abort(), 10_000);
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 

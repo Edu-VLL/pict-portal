@@ -50,7 +50,29 @@ export type GameMsg =
       // the word to validate guesses, exactly as a human drawer would.
       aiDrawing?: boolean;
     }
-  | { kind: "round-end"; word: string; winner?: string; ai?: boolean }
+  | {
+      kind: "round-end";
+      word: string;
+      winner?: string;
+      ai?: boolean;
+      // Points awarded to the winner this round. Speed-based (faster guess =
+      // more), so the scoreboard rewards quick reads instead of a flat +1.
+      // Optional for backward-compatibility with rounds recorded before this
+      // existed (they tally as a single point). Streak bonuses are computed at
+      // tally time from the sequence of winners, not stored here.
+      points?: number;
+    }
+  // A finished round's drawing, captured by the client that held the word and
+  // shared so everyone can see the gallery on the end-of-game podium. Sent as
+  // its own message (not folded into round-end) to keep round-end tiny and its
+  // derivations untouched. `image` is a small downscaled JPEG data URL.
+  | {
+      kind: "round-art";
+      image: string;
+      word: string;
+      winner?: string;
+      ai?: boolean;
+    }
   // A deliberate departure (the "Leave" button) — lets everyone drop this
   // player from the roster immediately instead of waiting out the activity
   // heartbeat's expiry window. (Sent as a regular persistent message: the
