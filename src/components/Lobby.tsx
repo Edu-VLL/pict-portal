@@ -42,6 +42,7 @@ export default function Lobby({
   const [customWordsText, setCustomWordsText] = useState("");
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState<string | null>(null)
+  const [wordsReady, setWordsReady] = useState(false)
   const customWordCount = parseCustomWords(customWordsText).length;
 
   // Generated once per visit (not at submit time) so it can double as the
@@ -101,6 +102,7 @@ export default function Lobby({
       }
 
       setCustomWordsText(data.words.join(", "))
+      setWordsReady(true)
 
     } catch(err) {
       setGenerateError(err instanceof Error ? err.message : "Error inesperado.")
@@ -113,6 +115,18 @@ export default function Lobby({
   function submit(e: FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
+
+    const rawWords = parseCustomWords(customWordsText)
+
+    if(mode === "create" && rawWords.length > 0 && rawWords.length <= 2 && !wordsReady) {
+      setGenerateError(
+        "Parece que escribiste un tema sin generar las palabras. Pulsa 'Generar con IA' o escribe varias palabras separadas por coma."
+      )
+      return;
+    }
+
+
+
     const customWords = mode === "create" ? parseCustomWords(customWordsText) : [];
     onJoin(
       trimmed,
@@ -271,7 +285,10 @@ export default function Lobby({
                 </div>
                 <textarea
                   value={customWordsText}
-                  onChange={(e) => setCustomWordsText(e.target.value)}
+                  onChange={(e) => {
+                    setCustomWordsText(e.target.value)
+                    setWordsReady(false)
+                  }}
                   placeholder="Hogar, Cine, Deporte…"
                   rows={2}
                   className="w-full resize-none rounded-xl border border-edge bg-ink px-3 py-2.5 text-sm outline-none placeholder:text-fg/30 focus:border-accent"
