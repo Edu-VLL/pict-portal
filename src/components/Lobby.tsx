@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, use, useEffect, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import Image from "next/image";
 import PlayerBadge from "./PlayerBadge";
 import ThemeToggle from "./ThemeToggle";
@@ -15,7 +15,6 @@ import {
   gameChannel,
   reactionsChannel,
 } from "@/lib/types";
-import { error } from "console";
 
 const ROUND_OPTIONS = [3, 5, 10];
 const DIFFICULTY_OPTIONS: { value: AiDifficulty; label: string }[] = [
@@ -96,7 +95,7 @@ export default function Lobby({
 
       if(!res.ok) throw new Error("La IA no pudo generar palabras :(")
 
-      const data: { words: string[]} = await res.json()
+      const data: { ok: boolean; words: string[]} = await res.json()
       if(!Array.isArray(data.words) || data.words.length === 0) {
         throw new Error("Respuesta vacía de la IA.");
       }
